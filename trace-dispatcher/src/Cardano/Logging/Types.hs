@@ -281,7 +281,7 @@ data ConfigOption =
     -- | Severity level for a filter (default is Warning)
     ConfSeverity {severity :: SeverityF}
     -- | Detail level (default is DNormal)
-  | ConfDetail {details :: DetailLevel}
+  | ConfDetail {detail :: DetailLevel}
   -- | To which backend to pass
   --   Default is [EKGBackend, Forwarder, Stdout HumanFormatColoured]
   | ConfBackend {backends :: [BackendConfig]}
