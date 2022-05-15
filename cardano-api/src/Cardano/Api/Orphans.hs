@@ -86,7 +86,7 @@ import           Ouroboros.Consensus.Util.Condense (condense)
 import           Ouroboros.Network.Block (blockHash, blockNo, blockSlot)
 import           Ouroboros.Network.Point (WithOrigin, withOriginToMaybe)
 import           Prelude hiding ((.), map, show)
-import           Prettyprinter (Pretty)
+import           Prettyprinter (Pretty, (<+>))
 
 import qualified Cardano.Api.Alonzo.Render as Render
 import qualified Cardano.Api.Ledger.Mary as Api
@@ -1438,7 +1438,6 @@ instance ToJSON Alonzo.PlutusDebugInfo where
       , "message" .= toJSON msg
       ]
 
-
 instance ToJSON Alonzo.PlutusError where
   toJSON = \case
     Alonzo.PlutusErrorV1 evaluationError -> toJSON evaluationError
@@ -1737,7 +1736,7 @@ instance ( ShelleyBasedEra era
     [ "WithdrawalsNotInRewardsDELEGS"
     , "incorrectWithdrawals"
     -- TODO borrowing ToJSON instance
-    , PP.nest 2 $ "[a]" <> do PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ toJSON incorrectWithdrawals
+    , PP.nest 2 $ "[a]" <+> do prettyJson $ toJSON incorrectWithdrawals
     ]
   pretty (DelplFailure f) = PP.pretty f
 
@@ -1757,39 +1756,39 @@ instance
   ( Crypto.Crypto crypto
   , ToJSON (KeyHash 'StakePool crypto)
   ) => PP.Pretty (KeyHash 'StakePool crypto) where
-  pretty v = "[b]" <> do PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ toJSON v
+  pretty v = "[b]" <+> do prettyJson $ toJSON v
 
 instance
   ( Crypto.Crypto crypto
   , ToJSON (PoolParams crypto)
   ) => PP.Pretty (PoolParams crypto) where
-  pretty v = "[c]" <> do PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ toJSON v
+  pretty v = "[c]" <+> do prettyJson $ toJSON v
 
 instance
   ( Core.Crypto (Ledger.Crypto era)
   ) => PP.Pretty (PoolPredicateFailure era) where
-  pretty (StakePoolNotRegisteredOnKeyPOOL (KeyHash unregStakePool)) = "[da]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (StakePoolNotRegisteredOnKeyPOOL (KeyHash unregStakePool)) = "[da]" <+> do
+    prettyJson $ object
       [ "kind"                .= String "StakePoolNotRegisteredOnKeyPOOL"
       , "unregisteredKeyHash" .= String (textShow unregStakePool)
       , "error"               .= String "This stake pool key hash is unregistered"
       ]
-  pretty (StakePoolRetirementWrongEpochPOOL currentEpoch intendedRetireEpoch maxRetireEpoch) = "[db]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (StakePoolRetirementWrongEpochPOOL currentEpoch intendedRetireEpoch maxRetireEpoch) = "[db]" <+> do
+    prettyJson $ object
       [ "kind"                    .= String "StakePoolRetirementWrongEpochPOOL"
       , "currentEpoch"            .= String (textShow currentEpoch)
       , "intendedRetirementEpoch" .= String (textShow intendedRetireEpoch)
       , "maxEpochForRetirement"   .= String (textShow maxRetireEpoch)
       ]
-  pretty (StakePoolCostTooLowPOOL certCost protCost) = "[dc]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (StakePoolCostTooLowPOOL certCost protCost) = "[dc]" <+> do
+    prettyJson $ object
       [ "kind"              .= String "StakePoolCostTooLowPOOL"
       , "certificateCost"   .= String (textShow certCost)
       , "protocolParCost"   .= String (textShow protCost)
       , "error"             .= String "The stake pool cost is too low"
       ]
-  pretty (PoolMedataHashTooBig poolID hashSize) = "[dd]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (PoolMedataHashTooBig poolID hashSize) = "[dd]" <+> do
+    prettyJson $ object
       [ "kind"      .= String "PoolMedataHashTooBig"
       , "poolID"    .= String (textShow poolID)
       , "hashSize"  .= String (textShow hashSize)
@@ -1799,30 +1798,30 @@ instance
 -- Apparently this should never happen according to the Shelley exec spec
   pretty (WrongCertificateTypePOOL index) =
     case index of
-      0 -> "[ee]" <> do
-        PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+      0 -> "[ee]" <+> do
+        prettyJson $ object
           [ "kind"  .= String "WrongCertificateTypePOOL"
           , "error" .= String "Wrong certificate type: Delegation certificate"
           ]
-      1 -> "[ef]" <> do
-        PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+      1 -> "[ef]" <+> do
+        prettyJson $ object
           [ "kind"  .= String "WrongCertificateTypePOOL"
           , "error" .= String "Wrong certificate type: MIR certificate"
           ]
-      2 -> "[eg]" <> do
-        PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+      2 -> "[eg]" <+> do
+        prettyJson $ object
           [ "kind"  .= String "WrongCertificateTypePOOL"
           , "error" .= String "Wrong certificate type: Genesis certificate"
           ]
-      k -> "[eh]" <> do
-        PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+      k -> "[eh]" <+> do
+        prettyJson $ object
           [ "kind"            .= String "WrongCertificateTypePOOL"
           , "certificateType" .= k
           , "error"           .= String "Wrong certificate type: Unknown certificate type"
           ]
 
-  pretty (WrongNetworkPOOL networkId listedNetworkId poolId) = "[i]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (WrongNetworkPOOL networkId listedNetworkId poolId) = "[i]" <+> do
+    prettyJson $ object
       [ "kind"            .= String "WrongNetworkPOOL"
       , "networkId"       .= String (textShow networkId)
       , "listedNetworkId" .= String (textShow listedNetworkId)
@@ -1834,53 +1833,53 @@ instance
 instance
   ( Ledger.Era era
   ) => PP.Pretty (DelegPredicateFailure era) where
-  pretty (StakeKeyAlreadyRegisteredDELEG alreadyRegistered) = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (StakeKeyAlreadyRegisteredDELEG alreadyRegistered) = "[f]" <+> do
+    prettyJson $ object
       [ "kind"        .= String "StakeKeyAlreadyRegisteredDELEG"
       , "credential"  .= String (textShow alreadyRegistered)
       , "error"       .= String "Staking credential already registered"
       ]
-  pretty (StakeKeyInRewardsDELEG alreadyRegistered) = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (StakeKeyInRewardsDELEG alreadyRegistered) = "[f]" <+> do
+    prettyJson $ object
       [ "kind"        .= String "StakeKeyInRewardsDELEG"
       , "credential"  .= String (textShow alreadyRegistered)
       , "error"       .= String "Staking credential registered in rewards map"
       ]
-  pretty (StakeKeyNotRegisteredDELEG notRegistered) = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (StakeKeyNotRegisteredDELEG notRegistered) = "[f]" <+> do
+    prettyJson $ object
       [ "kind"        .= String "StakeKeyNotRegisteredDELEG"
       , "credential"  .= String (textShow notRegistered)
       , "error"       .= String "Staking credential not registered"
       ]
-  pretty (StakeKeyNonZeroAccountBalanceDELEG remBalance) = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (StakeKeyNonZeroAccountBalanceDELEG remBalance) = "[f]" <+> do
+    prettyJson $ object
       [ "kind"              .= String "StakeKeyNonZeroAccountBalanceDELEG"
       , "remainingBalance"  .= remBalance
       ]
-  pretty (StakeDelegationImpossibleDELEG unregistered) = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (StakeDelegationImpossibleDELEG unregistered) = "[f]" <+> do
+    prettyJson $ object
       [ "kind"        .= String "StakeDelegationImpossibleDELEG"
       , "credential"  .= String (textShow unregistered)
       , "error"       .= String "Cannot delegate this stake credential because it is not registered"
       ]
-  pretty WrongCertificateTypeDELEG = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty WrongCertificateTypeDELEG = "[f]" <+> do
+    prettyJson $ object
       [ "kind" .= String "WrongCertificateTypeDELEG"
       ]
-  pretty (GenesisKeyNotInMappingDELEG (KeyHash genesisKeyHash)) = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (GenesisKeyNotInMappingDELEG (KeyHash genesisKeyHash)) = "[f]" <+> do
+    prettyJson $ object
       [ "kind"            .= String "GenesisKeyNotInMappingDELEG"
       , "unknownKeyHash"  .= String (textShow genesisKeyHash)
       , "error"           .= String "This genesis key is not in the delegation mapping"
       ]
-  pretty (DuplicateGenesisDelegateDELEG (KeyHash genesisKeyHash)) = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (DuplicateGenesisDelegateDELEG (KeyHash genesisKeyHash)) = "[f]" <+> do
+    prettyJson $ object
       [ "kind"              .= String "DuplicateGenesisDelegateDELEG"
       , "duplicateKeyHash"  .= String (textShow genesisKeyHash)
       , "error"             .= String "This genesis key has already been delegated to"
       ]
-  pretty (InsufficientForInstantaneousRewardsDELEG mirpot neededMirAmount reserves) = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (InsufficientForInstantaneousRewardsDELEG mirpot neededMirAmount reserves) = "[f]" <+> do
+    prettyJson $ object
       [ "kind"          .= String "InsufficientForInstantaneousRewardsDELEG"
       , "pot"           .= String potText
       , "neededAmount"  .= neededMirAmount
@@ -1889,27 +1888,27 @@ instance
     where potText = case mirpot of
             ReservesMIR -> "Reserves"
             TreasuryMIR -> "Treasury"
-  pretty (MIRCertificateTooLateinEpochDELEG currSlot boundSlotNo) = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (MIRCertificateTooLateinEpochDELEG currSlot boundSlotNo) = "[f]" <+> do
+    prettyJson $ object
       [ "kind"                        .= String "MIRCertificateTooLateinEpochDELEG"
       , "currentSlotNo"               .= currSlot
       , "mustBeSubmittedBeforeSlotNo" .= boundSlotNo
       ]
-  pretty (DuplicateGenesisVRFDELEG vrfKeyHash) = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (DuplicateGenesisVRFDELEG vrfKeyHash) = "[f]" <+> do
+    prettyJson $ object
       [ "kind"    .= String "DuplicateGenesisVRFDELEG"
       , "keyHash" .= vrfKeyHash
       ]
-  pretty MIRTransferNotCurrentlyAllowed = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty MIRTransferNotCurrentlyAllowed = "[f]" <+> do
+    prettyJson $ object
       [ "kind" .= String "MIRTransferNotCurrentlyAllowed"
       ]
-  pretty MIRNegativesNotCurrentlyAllowed = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty MIRNegativesNotCurrentlyAllowed = "[f]" <+> do
+    prettyJson $ object
       [ "kind" .= String "MIRNegativesNotCurrentlyAllowed"
       ]
-  pretty (InsufficientForTransferDELEG mirpot attempted available) = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (InsufficientForTransferDELEG mirpot attempted available) = "[f]" <+> do
+    prettyJson $ object
       [ "kind"      .= String "DuplicateGenesisVRFDELEG"
       , "pot"       .= String potText
       , "attempted" .= attempted
@@ -1918,12 +1917,12 @@ instance
     where potText = case mirpot of
             ReservesMIR -> "Reserves"
             TreasuryMIR -> "Treasury"
-  pretty MIRProducesNegativeUpdate = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty MIRProducesNegativeUpdate = "[f]" <+> do
+    prettyJson $ object
       [ "kind" .= String "MIRProducesNegativeUpdate"
       ]
-  pretty (MIRNegativeTransfer pot coin) = "[f]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (MIRNegativeTransfer pot coin) = "[f]" <+> do
+    prettyJson $ object
       [ "kind"    .= String "MIRNegativeTransfer"
       , "error"   .= String "Attempt to transfer a negative amount from a pot."
       , "pot"     .= String potText
@@ -1936,52 +1935,45 @@ instance
 instance
   ( ToJSON (Core.AuxiliaryDataHash StandardCrypto)
   ) => PP.Pretty (UtxowPredicateFail (Alonzo.AlonzoEra StandardCrypto)) where
-  pretty (WrappedShelleyEraFailure utxoPredFail) = "[g1]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode utxoPredFail
-  pretty (MissingRedeemers scripts) = "[g2]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (WrappedShelleyEraFailure utxoPredFail) = "[g1] WrappedShelleyEraFailure" <+> PP.pretty utxoPredFail
+  pretty (MissingRedeemers scripts) = "[g2]" <+> do
+    prettyJson $ object
       [ "kind"    .= String "MissingRedeemers"
       , "scripts" .= Render.renderMissingRedeemers scripts
       ]
-  pretty (MissingRequiredDatums required received) = "[g3]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (MissingRequiredDatums required received) = "[g3]" <+> do
+    prettyJson $ object
       [ "kind"      .= String "MissingRequiredDatums"
       , "required"  .= map (Crypto.hashToTextAsHex . SafeHash.extractHash) (Set.toList required)
       , "received"  .= map (Crypto.hashToTextAsHex . SafeHash.extractHash) (Set.toList received)
       ]
-  pretty (PPViewHashesDontMatch ppHashInTxBody ppHashFromPParams) = "[g4]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (PPViewHashesDontMatch ppHashInTxBody ppHashFromPParams) = "[g4]" <+> do
+    prettyJson $ object
       [ "kind"        .= String "PPViewHashesDontMatch"
       , "fromTxBody"  .= Render.renderScriptIntegrityHash (strictMaybeToMaybe ppHashInTxBody)
       , "fromPParams" .= Render.renderScriptIntegrityHash (strictMaybeToMaybe ppHashFromPParams)
       ]
-  pretty (MissingRequiredSigners missingKeyWitnesses) = "[g5]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (MissingRequiredSigners missingKeyWitnesses) = "[g5]" <+> do
+    prettyJson $ object
       [ "kind"      .= String "MissingRequiredSigners"
       , "witnesses" .= Set.toList missingKeyWitnesses
       ]
-  pretty (UnspendableUTxONoDatumHash txins) = "[g6]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (UnspendableUTxONoDatumHash txins) = "[g6]" <+> do
+    prettyJson $ object
       [ "kind"  .= String "MissingRequiredSigners"
       , "txins" .= Set.toList txins
       ]
-  pretty (NonOutputSupplimentaryDatums disallowed acceptable) = "[g7]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (NonOutputSupplimentaryDatums disallowed acceptable) = "[g7]" <+> do
+    prettyJson $ object
       [ "kind"        .= String "NonOutputSupplimentaryDatums"
       , "disallowed"  .= Set.toList disallowed
       , "acceptable"  .= Set.toList acceptable
       ]
-  pretty (ExtraRedeemers rdmrs) = "[g8]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (ExtraRedeemers rdmrs) = "[g8]" <+> do
+    prettyJson $ object
       [ "kind"  .= String "ExtraRedeemers"
       , "rdmrs" .= map (Api.renderScriptWitnessIndex . Api.fromAlonzoRdmrPtr) rdmrs
       ]
-
--- instance
---   ( ShelleyBasedEra era
---   , ToJSON (Core.AuxiliaryDataHash (Ledger.Crypto era))
---   ) => Pretty (Core.AuxiliaryDataHash (Ledger.Crypto era)) where
---   pretty hash = PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ toJSON hash
 
 instance
   ( ShelleyBasedEra era
@@ -1990,65 +1982,364 @@ instance
   , Pretty (PredicateFailure (Core.EraRule "UTXO" era))
   , ToJSON (Core.AuxiliaryDataHash (Ledger.Crypto era))
   ) => PP.Pretty (UtxowPredicateFailure era) where
-  pretty (ExtraneousScriptWitnessesUTXOW extraneousScripts) = "[h1]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (ExtraneousScriptWitnessesUTXOW extraneousScripts) = "[h1]" <+> do
+    prettyJson $ object
       [ "kind"              .= String "InvalidWitnessesUTXOW"
       , "extraneousScripts" .= extraneousScripts
       ]
-  pretty (InvalidWitnessesUTXOW wits') = "[h2]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (InvalidWitnessesUTXOW wits') = "[h2]" <+> do
+    prettyJson $ object
       [ "kind"              .= String "InvalidWitnessesUTXOW"
       , "invalidWitnesses"  .= map textShow wits'
       ]
-  pretty (MissingVKeyWitnessesUTXOW (WitHashes wits')) = "[h3]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (MissingVKeyWitnessesUTXOW (WitHashes wits')) = "[h3]" <+> do
+    prettyJson $ object
       [ "kind"              .= String "MissingVKeyWitnessesUTXOW"
       , "missingWitnesses"  .= wits'
       ]
-  pretty (MissingScriptWitnessesUTXOW missingScripts) = "[h4]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (MissingScriptWitnessesUTXOW missingScripts) = "[h4]" <+> do
+    prettyJson $ object
       [ "kind"            .= String "MissingScriptWitnessesUTXOW"
       , "missingScripts"  .= missingScripts
       ]
-  pretty (ScriptWitnessNotValidatingUTXOW failedScripts) = "[h5]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (ScriptWitnessNotValidatingUTXOW failedScripts) = "[h5]" <+> do
+    prettyJson $ object
       [ "kind"          .= String "ScriptWitnessNotValidatingUTXOW"
       , "failedScripts" .= failedScripts
       ]
   pretty (UtxoFailure f) = PP.pretty f
-  pretty (MIRInsufficientGenesisSigsUTXOW genesisSigs) = "[h6]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (MIRInsufficientGenesisSigsUTXOW genesisSigs) = "[h6]" <+> do
+    prettyJson $ object
       [ "kind"        .= String "MIRInsufficientGenesisSigsUTXOW"
       , "genesisSigs" .= genesisSigs
       ]
-  pretty (MissingTxBodyMetadataHash metadataHash) = "[h7]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (MissingTxBodyMetadataHash metadataHash) = "[h7]" <+> do
+    prettyJson $ object
       [ "kind"          .= String "MissingTxBodyMetadataHash"
       , "metadataHash"  .= metadataHash
       ]
-  pretty (MissingTxMetadata txBodyMetadataHash) = "[h8]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (MissingTxMetadata txBodyMetadataHash) = "[h8]" <+> do
+    prettyJson $ object
       [ "kind"                .= String "MissingTxMetadata"
       , "txBodyMetadataHash"  .= txBodyMetadataHash
       ]
-  pretty (ConflictingMetadataHash txBodyMetadataHash fullMetadataHash) = "[h9]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
+  pretty (ConflictingMetadataHash txBodyMetadataHash fullMetadataHash) =
+    "[h9]" <+> do
+    prettyJson $ object
       [ "kind"                .= String "ConflictingMetadataHash"
       , "txBodyMetadataHash"  .= txBodyMetadataHash
       , "fullMetadataHash"    .= fullMetadataHash
       ]
-  pretty InvalidMetadata = "[h10]" <> do
-    PP.pretty $ Text.decodeUtf8 $ LBS.toStrict $ Aeson.encode $ object
-      [ "kind"  .= String "InvalidMetadata"
+  pretty InvalidMetadata = "InvalidMetadata"
+
+
+instance Pretty (Alonzo.UtxoPredicateFailure (Alonzo.AlonzoEra StandardCrypto)) where
+  pretty (Alonzo.BadInputsUTxO badInputs) =
+    "[ia]" <+> do
+    prettyJson $ object
+      [ "kind"      .= String "BadInputsUTxO"
+      , "badInputs" .= badInputs
+      , "error"     .= Render.renderBadInputsUTxOErr badInputs
+      ]
+  pretty (Alonzo.OutsideValidityIntervalUTxO validtyInterval slot) =
+    "[ib]" <+> do
+    prettyJson $ object
+      [ "kind"              .= String "ExpiredUTxO"
+      , "validityInterval"  .= validtyInterval
+      , "slot"              .= slot
+      ]
+  pretty (Alonzo.MaxTxSizeUTxO txsize maxtxsize) =
+    "[ic]" <+> do
+    prettyJson $ object
+      [ "kind"    .= String "MaxTxSizeUTxO"
+      , "size"    .= txsize
+      , "maxSize" .= maxtxsize
+      ]
+  pretty Alonzo.InputSetEmptyUTxO =
+    "[id]" <+> do
+    prettyJson $ object
+      [ "kind" .= String "InputSetEmptyUTxO"
+      ]
+  pretty (Alonzo.FeeTooSmallUTxO minfee currentFee) =
+    "[ie]" <+> do
+    prettyJson $ object
+      [ "kind"    .= String "FeeTooSmallUTxO"
+      , "minimum" .= minfee
+      , "fee"     .= currentFee
+      ]
+  pretty (Alonzo.ValueNotConservedUTxO consumed produced) =
+    "[if]" <+> do
+    prettyJson $ object
+      [ "kind"      .= String "ValueNotConservedUTxO"
+      , "consumed"  .= consumed
+      , "produced"  .= produced
+      , "error"     .= Render.renderValueNotConservedErr consumed produced
+      ]
+  pretty (Alonzo.WrongNetwork network addrs) =
+    "[ig]" <+> do
+    prettyJson $ object
+      [ "kind"    .= String "WrongNetwork"
+      , "network" .= network
+      , "addrs"   .= addrs
+      ]
+  pretty (Alonzo.WrongNetworkWithdrawal network addrs) =
+    "[ih]" <+> do
+    prettyJson $ object
+      [ "kind"    .= String "WrongNetworkWithdrawal"
+      , "network" .= network
+      , "addrs"   .= addrs
+      ]
+  pretty (Alonzo.OutputTooSmallUTxO badOutputs) =
+    "[ii]" <+> do
+    prettyJson $ object
+      [ "kind"    .= String "OutputTooSmallUTxO"
+      , "outputs" .= badOutputs
+      , "error"   .= String "The output is smaller than the allow minimum UTxO value defined in the protocol parameters"
+      ]
+  pretty (Alonzo.UtxosFailure predFailure) = "[ij]" <+> "UtxosFailure" <+> PP.pretty predFailure
+  pretty (Alonzo.OutputBootAddrAttrsTooBig txouts) =
+    "[ik]" <+> do
+    prettyJson $ object
+      [ "kind"    .= String "OutputBootAddrAttrsTooBig"
+      , "outputs" .= txouts
+      , "error"   .= String "The Byron address attributes are too big"
+      ]
+  pretty Alonzo.TriesToForgeADA =
+    "[il]" <+> do
+    prettyJson $ object
+      [ "kind"  .= String "TriesToForgeADA"
+      ]
+  pretty (Alonzo.OutputTooBigUTxO badOutputs) =
+    "[im]" <+> do
+    prettyJson $ object
+      [ "kind"    .= String "OutputTooBigUTxO"
+      , "outputs" .= badOutputs
+      , "error"   .= String "Too many asset ids in the tx output"
+      ]
+  pretty (Alonzo.InsufficientCollateral computedBalance suppliedFee) =
+    "[in]" <+> do
+    prettyJson $ object
+      [ "kind"    .= String "InsufficientCollateral"
+      , "balance" .= computedBalance
+      , "txfee"   .= suppliedFee
+      ]
+  pretty (Alonzo.ScriptsNotPaidUTxO utxos) =
+    "[io]" <+> do
+    prettyJson $ object
+      [ "kind"  .= String "ScriptsNotPaidUTxO"
+      , "utxos" .= utxos
+      ]
+  pretty (Alonzo.ExUnitsTooBigUTxO pParamsMaxExUnits suppliedExUnits) =
+    "[ip]" <+> do
+    prettyJson $ object
+      [ "kind"        .= String "ExUnitsTooBigUTxO"
+      , "maxexunits"  .= pParamsMaxExUnits
+      , "exunits"     .= suppliedExUnits
+      ]
+  pretty (Alonzo.CollateralContainsNonADA inputs) =
+    "[iq]" <+> do
+    prettyJson $ object
+      [ "kind"    .= String "CollateralContainsNonADA"
+      , "inputs"  .= inputs
+      ]
+  pretty (Alonzo.WrongNetworkInTxBody actualNetworkId netIdInTxBody) =
+    "[ir]" <+> do
+    prettyJson $ object
+      [ "kind"            .= String "WrongNetworkInTxBody"
+      , "networkid"       .= actualNetworkId
+      , "txbodyNetworkId" .= netIdInTxBody
+      ]
+  pretty (Alonzo.OutsideForecast slotNum) =
+    "[is]" <+> do
+    prettyJson $ object
+      [ "kind" .= String "OutsideForecast"
+      , "slot" .= slotNum
+      ]
+  pretty (Alonzo.TooManyCollateralInputs maxCollateralInputs numberCollateralInputs) =
+    "[it]" <+> do
+    prettyJson $ object
+      [ "kind"    .= String "TooManyCollateralInputs"
+      , "max"     .= maxCollateralInputs
+      , "inputs"  .= numberCollateralInputs
+      ]
+  pretty Alonzo.NoCollateralInputs =
+    "[iu]" <+> do
+    prettyJson $ object
+      [ "kind"  .= String "NoCollateralInputs"
       ]
 
--- instance
---   ( ShelleyBasedEra era
---   -- , ToObject (PredicateFailure (UTXO era))
---   -- , ToObject (PredicateFailure (UTXOW era))
---   -- , ToObject (PredicateFailure (Core.EraRule "LEDGER" era))
---   ) => PP.Pretty (ApplyTxError era) where
---   pretty verb (ApplyTxError predicateFailures) = PP.vsep $ map pretty predicateFailures
+instance Pretty (Alonzo.UtxosPredicateFailure (Alonzo.AlonzoEra StandardCrypto)) where
+  pretty (Alonzo.ValidationTagMismatch isValidating reason) = PP.vsep
+    [ "[j1]" <+> "ValidationTagMismatch:"
+    , PP.nest 2 $ PP.vsep
+      [ "isValidating:" <+> PP.pretty isValidating
+      , "reason:" <+> PP.pretty reason
+      ]
+    ]
+  pretty (Alonzo.CollectErrors errors) =
+    "[j2]" <+> do
+    prettyJson $ object
+      [ "kind"    .= String "CollectErrors"
+      , "errors"  .= errors
+      ]
+  pretty (Alonzo.UpdateFailure pFailure) =
+    "[j3]" <+> PP.pretty pFailure
 
--- (PP.Pretty
---                           (PredicateFailure (Ledger.EraRule "UTXO" era)))
+instance
+  ( Ledger.Era era
+  ) => Pretty (PpupPredicateFailure era) where
+  pretty (NonGenesisUpdatePPUP proposalKeys genesisKeys) =
+    "[k1]" <+> do
+    prettyJson $ object
+      [ "kind"  .= String "NonGenesisUpdatePPUP"
+      , "keys"  .= proposalKeys Set.\\ genesisKeys
+      ]
+  pretty (PPUpdateWrongEpoch currEpoch intendedEpoch votingPeriod) =
+    "[k1]" <+> do
+    prettyJson $ object
+      [ "kind"          .= String "PPUpdateWrongEpoch"
+      , "currentEpoch"  .= currEpoch
+      , "intendedEpoch" .= intendedEpoch
+      , "votingPeriod"  .= String (show votingPeriod)
+      ]
+  pretty (PVCannotFollowPPUP badPv) =
+    "[k1]" <+> do
+    prettyJson $ object
+      [ "kind"                .= String "PVCannotFollowPPUP"
+      , "badProtocolVersion" .= badPv
+      ]
+
+instance Pretty Alonzo.IsValid where
+  pretty (Alonzo.IsValid v) = case v of
+    True -> "Valid"
+    False -> "NoValid"
+
+instance Pretty Alonzo.TagMismatchDescription where
+  pretty tmd = case tmd of
+    Alonzo.PassedUnexpectedly -> "PassedUnexpectedly"
+    Alonzo.FailedUnexpectedly forReasons -> PP.vsep
+      [ "FailedUnexpectedly"
+      , PP.nest 2 $ PP.pretty forReasons
+      ]
+
+instance Pretty Alonzo.FailureDescription where
+  pretty = \case
+    Alonzo.OnePhaseFailure t -> "OnePhaseFailure" <+> PP.pretty t
+    Alonzo.PlutusFailure _t bs -> PP.vsep
+      [ "PlutusFailure"
+      , PP.nest 2 $ PP.vsep
+        [ "_"
+        , PP.pretty (Alonzo.debugPlutus (BSU.toString bs))
+        ]
+      ]
+
+instance Pretty Alonzo.PlutusDebugInfo where
+  pretty = \case
+    Alonzo.DebugSuccess budget -> "DebugSuccess"
+      <+> PP.pretty budget
+    Alonzo.DebugCannotDecode msg -> "DebugCannotDecode"
+      <+> PP.pretty msg
+    Alonzo.DebugInfo texts e d -> "DebugInfo"
+      <+> PP.pretty texts
+      <+> PP.pretty e
+      <+> PP.pretty d
+    Alonzo.DebugBadHex msg -> "DebugBadHex"
+      <+> PP.pretty msg
+
+instance Pretty Alonzo.PlutusDebug where
+  pretty = \case
+    Alonzo.PlutusDebugV1 costModel exUnits sbs ds protVer -> PP.vsep
+      [ "PlutusDebugV1"
+      , PP.nest 2 $ PP.vsep
+        [ PP.hang 2 $ "costModel:"  <+> PP.pretty costModel
+        , PP.hang 2 $ "exUnits:"    <+> PP.pretty exUnits
+        , PP.hang 2 $ "sbs:"        <+> PP.pretty (Text.decodeLatin1 (B16.encode (SBS.fromShort sbs)))
+        , PP.hang 2 $ "scriptHash:" <+> PP.pretty (scriptHashOf Alonzo.PlutusV1 sbs)
+        , PP.hang 2 $ "ds:"         <+> PP.pretty ds
+        , PP.hang 2 $ "dsSummary:"  <+> prettyPlutusDatas ds
+        , PP.hang 2 $ "protVer:"    <+> PP.pretty protVer
+        ]
+      ]
+    Alonzo.PlutusDebugV2 costModel exUnits sbs ds protVer -> PP.vsep
+      [ "PlutusDebugV2"
+      , PP.nest 2 $ PP.vsep
+        [ PP.hang 2 $ "costModel:"  <+>  PP.pretty costModel
+        , PP.hang 2 $ "exUnits:"    <+>  PP.pretty exUnits
+        , PP.hang 2 $ "sbs:"        <+>  PP.pretty (Text.decodeLatin1 (B16.encode (SBS.fromShort sbs)))
+        , PP.hang 2 $ "scriptHash:" <+>  PP.pretty (scriptHashOf Alonzo.PlutusV2 sbs)
+        , PP.hang 2 $ "ds:"         <+>  PP.pretty ds
+        , PP.hang 2 $ "dsSummary:"  <+>  prettyPlutusDatas ds
+        , PP.hang 2 $ "protVer:"    <+>  PP.pretty protVer
+        ]
+      ]
+
+instance Pretty ProtVer where
+  pretty _ = "ProtoVer" <+> "{..}"
+
+instance Pretty Alonzo.PlutusError where
+  pretty = \case
+    Alonzo.PlutusErrorV1 evaluationError -> "PlutusErrorV1" <+> PP.pretty evaluationError
+    Alonzo.PlutusErrorV2 evaluationError -> "PlutusErrorV2" <+> PP.pretty evaluationError
+
+instance Pretty Alonzo.CostModel where
+  pretty _ = "CostModel"
+
+instance Pretty Ledger.ExUnits where
+  pretty _ = "ExUnits"
+
+prettyPlutusDatas :: [Plutus.Data] -> PP.Doc ann
+prettyPlutusDatas [dat, redeemer, info] = "PlutusData"
+  <+> "{" <+> "data"     <+> "=" <+> PP.pretty dat
+  <+> "," <+> "redeemer" <+> "=" <+> PP.pretty redeemer
+  <+> "," <+> "info"     <+> "=" <+> prettyPlutusData info
+  <+> "}"
+prettyPlutusDatas [dat, info] = "PlutusData"
+  <+> "{" <+> "data"     <+> "=" <+> PP.pretty dat
+  <+> "," <+> "info"     <+> "=" <+> prettyPlutusData info
+  <+> "}"
+prettyPlutusDatas _ = "PlutusData" <+> "{..}"
+
+prettyPlutusData :: Plutus.Data -> PP.Doc ann
+prettyPlutusData info = case PV1.fromData info of
+  Nothing -> "Nothing"
+  Just PV1.ScriptContext { PV1.scriptContextTxInfo, PV1.scriptContextPurpose} -> "Just"
+    <+> "ScriptContext"
+      <+> prettyTxInfo scriptContextTxInfo
+      <+> prettyScriptPurpose scriptContextPurpose
+
+prettyTxInfo :: PV1.TxInfo -> PP.Doc ann
+prettyTxInfo txInfo = PP.vsep
+  [ "TxInfo"
+  , "{"
+  , PP.nest 2 $ "," <+> "txInfoInputs"      <+> "=" <+> prettyJson (PV1.toData (PV1.txInfoInputs txInfo))
+  , PP.nest 2 $ "," <+> "txInfoOutputs"     <+> "=" <+> prettyJson (PV1.toData (PV1.txInfoOutputs txInfo))
+  , PP.nest 2 $ "," <+> "txInfoFee"         <+> "=" <+> prettyJson (PV1.toData (PV1.txInfoFee txInfo))
+  , PP.nest 2 $ "," <+> "txInfoMint"        <+> "=" <+> prettyJson (PV1.toData (PV1.txInfoMint txInfo))
+  , PP.nest 2 $ "," <+> "txInfoDCert"       <+> "=" <+> prettyJson (PV1.toData (PV1.txInfoDCert txInfo))
+  , PP.nest 2 $ "," <+> "txInfoWdrl"        <+> "=" <+> prettyJson (PV1.toData (PV1.txInfoWdrl txInfo))
+  , PP.nest 2 $ "," <+> "txInfoValidRange"  <+> "=" <+> prettyJson (PV1.toData (PV1.txInfoValidRange txInfo))
+  , PP.nest 2 $ "," <+> "txInfoSignatories" <+> "=" <+> prettyJson (PV1.toData (PV1.txInfoSignatories txInfo))
+  , PP.nest 2 $ "," <+> "txInfoData"        <+> "=" <+> prettyJson (PV1.toData (PV1.txInfoData txInfo))
+  , PP.nest 2 $ "," <+> "txInfoId"          <+> "=" <+> prettyJson (PV1.toData (PV1.txInfoId txInfo))
+  , "}"
+  ]
+
+prettyJson :: ToJSON a => a -> PP.Doc ann
+prettyJson = PP.pretty . Text.decodeUtf8 . LBS.toStrict . Aeson.encode
+
+prettyScriptPurpose :: PV1.ScriptPurpose -> PP.Doc ann
+prettyScriptPurpose = \case
+  PV1.Minting currencySymbol -> "Minting"
+    <+> PP.pretty (PV1.toData currencySymbol)
+  PV1.Spending txOutRef -> "Spending"
+    <+> PP.pretty (PV1.toData txOutRef)
+  PV1.Rewarding stakingCredential -> "Rewarding"
+    <+> PP.pretty (PV1.toData stakingCredential)
+  PV1.Certifying dCert -> "Certifying"
+    <+> PP.pretty (PV1.toData dCert)
+
+-- instance Pretty (Mary.Value era) where
+--   pretty (Mary.Value l ps) = "Value"
+--     <+> PP.pretty l
+--     <+> PP.pretty ps
+
