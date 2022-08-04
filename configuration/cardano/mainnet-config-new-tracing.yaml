@@ -45,7 +45,7 @@ TurnOnLogging: True
 UseTraceDispatcher: True
 
 TraceOptions:
-  Node:
+  "":
     severity: Notice
     detail: DNormal
     backends:
@@ -53,71 +53,60 @@ TraceOptions:
       - EKGBackend
       - Forwarder
 
-  Node.ChainDB:
+# More interesing tracers
+
+  ChainDB:
     severity: Info
 
-  Node.AcceptPolicy:
+  AcceptPolicy:
     severity: Info
 
-  Node.DNSResolver:
+  DNSResolver:
     severity: Info
 
-  Node.DNSSubscription:
+  DNSSubscription:
     severity: Info
 
-  Node.DiffusionInit:
+  DiffusionInit:
     severity: Info
 
-  Node.ErrorPolicy:
+  ErrorPolicy:
     severity: Info
 
-  Node.Forge:
+  Forge:
     severity: Info
 
-  Node.IpSubscription:
+  IpSubscription:
     severity: Info
 
-  Node.LocalErrorPolicy:
+  LocalErrorPolicy:
     severity: Info
 
-  Node.Mempool:
+  Mempool:
     severity: Info
 
-  Node.Resources:
+  Resources:
     severity: Info
 
-  Node.ChainDB.AddBlockEvent.AddedBlockToQueue:
+#---------------------------
+# Frequency limited tracer
+  ChainDB.AddBlockEvent.AddedBlockToQueue:
     maxFrequency: 2.0
 
-  Node.ChainDB.AddBlockEvent.AddedBlockToVolatileDB:
+  ChainDB.AddBlockEvent.AddedBlockToVolatileDB:
     maxFrequency: 2.0
 
-  Node.ChainDB.CopyToImmutableDBEvent.CopiedBlockToImmutableDB:
+  ChainDB.CopyToImmutableDBEvent.CopiedBlockToImmutableDB:
     maxFrequency: 2.0
 
-  Node.ChainDB.AddBlockEvent.AddBlockValidation.ValidCandidate:
+  ChainDB.AddBlockEvent.AddBlockValidation.ValidCandidate:
     maxFrequency: 2.0
 
-  Node.BlockFetchClient.CompletedBlockFetch:
+  BlockFetchClient.CompletedBlockFetch:
     maxFrequency: 2.0
 
-# Options for the trace forwarder
-TraceOptionForwarder:
-    address:
-      filePath: /tmp/forwarder.sock
-    mode: Initiator
+TraceOptionPeerFrequency: 2000
 
-TraceOptionPeerFreqency: 2000
-
-TraceOptionResourceFreqency: 5000
-
-
-##### Stubs for legacy logging config #####
+TraceOptionResourceFrequency: 5000
 
 TurnOnLogMetrics: False
-minSeverity: Critical
-setupScribes: []
-setupBackends: []
-defaultScribes: []
-defaultBackends: []
-options: {}

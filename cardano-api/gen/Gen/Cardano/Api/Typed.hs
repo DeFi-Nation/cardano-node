@@ -44,6 +44,7 @@ module Gen.Cardano.Api.Typed
   , genStakeAddress
   , genTx
   , genTxBody
+  , genTxBodyContent
   , genLovelace
   , genValue
   , genValueDefault
@@ -576,7 +577,7 @@ genTxInsCollateral era =
                           [ pure TxInsCollateralNone
                           , TxInsCollateral supported <$> Gen.list (Range.linear 0 10) genTxIn
                           ]
-genTxInsReference :: CardanoEra era -> Gen (TxInsReference era)
+genTxInsReference :: CardanoEra era -> Gen (TxInsReference BuildTx era)
 genTxInsReference era =
     case refInsScriptsAndInlineDatsSupportedInEra era of
       Nothing        -> pure TxInsReferenceNone
@@ -755,13 +756,16 @@ genProtocolParameters =
     <*> genRational
     <*> genRational
     <*> Gen.maybe genLovelace
-    <*> genCostModels
+    <*> return mempty
+    --TODO: Babbage figure out how to deal with
+    -- asymmetric cost model JSON instances
     <*> Gen.maybe genExecutionUnitPrices
     <*> Gen.maybe genExecutionUnits
     <*> Gen.maybe genExecutionUnits
     <*> Gen.maybe genNat
     <*> Gen.maybe genNat
     <*> Gen.maybe genNat
+    <*> Gen.maybe genLovelace
 
 genProtocolParametersUpdate :: Gen ProtocolParametersUpdate
 genProtocolParametersUpdate = do
@@ -783,13 +787,16 @@ genProtocolParametersUpdate = do
   protocolUpdateMonetaryExpansion   <- Gen.maybe genRational
   protocolUpdateTreasuryCut         <- Gen.maybe genRational
   protocolUpdateUTxOCostPerWord     <- Gen.maybe genLovelace
-  protocolUpdateCostModels          <- genCostModels
+  let protocolUpdateCostModels = mempty -- genCostModels
+  --TODO: Babbage figure out how to deal with
+  -- asymmetric cost model JSON instances
   protocolUpdatePrices              <- Gen.maybe genExecutionUnitPrices
   protocolUpdateMaxTxExUnits        <- Gen.maybe genExecutionUnits
   protocolUpdateMaxBlockExUnits     <- Gen.maybe genExecutionUnits
   protocolUpdateMaxValueSize        <- Gen.maybe genNat
   protocolUpdateCollateralPercent   <- Gen.maybe genNat
   protocolUpdateMaxCollateralInputs <- Gen.maybe genNat
+  protocolUpdateUTxOCostPerByte     <- Gen.maybe genLovelace
   pure ProtocolParametersUpdate{..}
 
 
@@ -808,14 +815,14 @@ genCostModel = case Plutus.defaultCostModelParams of
       eCostModel <- Alonzo.mkCostModel <$> genPlutusLanguage
                                        <*> mapM (const $ Gen.integral (Range.linear 0 5000)) dcm
       case eCostModel of
-        Left err -> panic $ Text.pack $ "genCostModel: " <> err
+        Left err -> panic $ Text.pack $ "genCostModel: " <> show err
         Right cModel -> return . CostModel $ Alonzo.getCostModelParams cModel
 
 genPlutusLanguage :: Gen Language
 genPlutusLanguage = Gen.element [PlutusV1, PlutusV2]
 
-genCostModels :: Gen (Map AnyPlutusScriptVersion CostModel)
-genCostModels =
+_genCostModels :: Gen (Map AnyPlutusScriptVersion CostModel)
+_genCostModels =
     Gen.map (Range.linear 0 (length plutusScriptVersions))
             ((,) <$> Gen.element plutusScriptVersions
                  <*> genCostModel)

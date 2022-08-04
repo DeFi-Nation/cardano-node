@@ -4,12 +4,10 @@ self: {
     cacheDir    = "${self.localCluster.stateDir}/.cache";
     stateDir    = "run/current";
     batchName   = "plain";
-    profileName = "default-alzo";
+    profileName = "default-bage";
     basePort    = 30000;
-    autoStartCluster = false;
-    autoStartClusterArgs = "";
     enableEKG        = true;
-    workbenchDevMode = false;
+    workbenchDevMode = true;
     extraSupervisorConfig = {};
   };
   membench = {
@@ -19,8 +17,7 @@ self: {
     rtsflags = "";
     limit2 = "6553M";
     variantTable = {
-      baseline = {};
-      new-tracing = { legacyTracing = false; };
+      baseline = { legacyTracing = false; };
     };
     shelleyGenesisHash = "1a3be38bcbb7911969283716ad7aa550250226b76a61fc51cc9a9a35d9276d81";
   };

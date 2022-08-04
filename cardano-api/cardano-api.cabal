@@ -1,7 +1,7 @@
 cabal-version: 3.0
 
 name:                   cardano-api
-version:                1.33.0
+version:                1.35.0
 description:            The cardano api
 author:                 IOHK
 maintainer:             operations@iohk.io
@@ -40,6 +40,7 @@ library
                         Cardano.Api.ChainSync.Client
                         Cardano.Api.ChainSync.ClientPipelined
                         Cardano.Api.Crypto.Ed25519Bip32
+                        Cardano.Api.EraCast
                         Cardano.Api.Protocol.Types
                         Cardano.Api.Shelley
                         -- TODO: Eliminate in the future when
@@ -61,6 +62,7 @@ library
                         Cardano.Api.HasTypeProxy
                         Cardano.Api.IPC
                         Cardano.Api.IPC.Monad
+                        Cardano.Api.InMode
                         Cardano.Api.Json
                         Cardano.Api.Key
                         Cardano.Api.KeysByron
@@ -86,7 +88,7 @@ library
                         Cardano.Api.StakePoolMetadata
                         Cardano.Api.Tx
                         Cardano.Api.TxBody
-                        Cardano.Api.InMode
+                        Cardano.Api.TxIn
                         Cardano.Api.TxMetadata
                         Cardano.Api.TxSubmit.ErrorRender
                         Cardano.Api.TxSubmit.Types
@@ -116,7 +118,6 @@ library
                       , cardano-protocol-tpraos
                       , cardano-slotting
                       , cborg
-                      , compact-map
                       , contra-tracer
                       , containers
                       , cryptonite
@@ -139,6 +140,8 @@ library
                       , parsec
                       , plutus-ledger-api
                       , prettyprinter
+                      , prettyprinter-configurable
+                      , random
                       , scientific
                       , serialise
                       , small-steps
@@ -153,6 +156,7 @@ library
                       , typed-protocols
                       , unordered-containers >= 0.2.11
                       , vector
+                      , vector-map
                       , yaml
 
 library gen
@@ -197,6 +201,7 @@ test-suite cardano-api-test
                       , cardano-api
                       , cardano-api:gen
                       , cardano-binary
+                      , cardano-data
                       , cardano-crypto
                       , cardano-crypto-class
                       , cardano-crypto-test
@@ -215,7 +220,6 @@ test-suite cardano-api-test
                       , tasty
                       , tasty-hedgehog
                       , tasty-quickcheck
-                      , tasty-th
                       , time
 
   other-modules:        Test.Cardano.Api.Crypto
@@ -233,6 +237,7 @@ test-suite cardano-api-test
                         Test.Cardano.Api.Typed.Orphans
                         Test.Cardano.Api.Typed.RawBytes
                         Test.Cardano.Api.Typed.Script
+                        Test.Cardano.Api.Typed.TxBody
                         Test.Cardano.Api.Typed.Value
 
   ghc-options:          -threaded -rtsopts -with-rtsopts=-N -with-rtsopts=-T

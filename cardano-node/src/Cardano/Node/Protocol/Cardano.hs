@@ -1,7 +1,7 @@
-{-# LANGUAGE FlexibleContexts    #-}
-{-# LANGUAGE FlexibleInstances   #-}
-{-# LANGUAGE GADTs               #-}
-{-# LANGUAGE NamedFieldPuns      #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {-# OPTIONS_GHC -Wno-orphans  #-}
@@ -24,6 +24,7 @@ import           Ouroboros.Consensus.Cardano
 import qualified Ouroboros.Consensus.Cardano as Consensus
 import qualified Ouroboros.Consensus.Cardano.CanHardFork as Consensus
 import           Ouroboros.Consensus.HardFork.Combinator.Condense ()
+import qualified Ouroboros.Consensus.Shelley.Node.Praos as Praos
 
 import           Ouroboros.Consensus.Cardano.Condense ()
 import qualified Ouroboros.Consensus.Mempool.TxLimits as TxLimits
@@ -97,7 +98,9 @@ mkSomeConsensusProtocolCardano NodeByronProtocolConfiguration {
                              npcTestMaryHardForkAtEpoch,
                              npcTestMaryHardForkAtVersion,
                              npcTestAlonzoHardForkAtEpoch,
-                             npcTestAlonzoHardForkAtVersion
+                             npcTestAlonzoHardForkAtVersion,
+                             npcTestBabbageHardForkAtEpoch,
+                             npcTestBabbageHardForkAtVersion
                            }
                            files = do
     byronGenesis <-
@@ -193,13 +196,21 @@ mkSomeConsensusProtocolCardano NodeByronProtocolConfiguration {
         Consensus.ProtocolParamsAlonzo {
           -- This is /not/ the Alonzo protocol version. It is the protocol
           -- version that this node will declare that it understands, when it
-          -- is in the Alonzo era. Since Alonzo is currently the last known
-          -- protocol version then this is also the Alonzo protocol version.
-          alonzoProtVer = ProtVer 6 0,
+          -- is in the Alonzo era. That is, it is the version of protocol
+          -- /after/ Alonzo, i.e. Babbage.
+          alonzoProtVer = ProtVer 7 1,
           alonzoMaxTxCapacityOverrides =
             TxLimits.mkOverrides TxLimits.noOverridesMeasure
         }
-
+        Praos.ProtocolParamsBabbage {
+          -- This is /not/ the Babbage protocol version. It is the protocol
+          -- version that this node will declare that it understands, when it
+          -- is in the Babbage era. Since Babbage is currently the last known
+          -- protocol version then this is also the Babbage protocol version.
+          Praos.babbageProtVer = ProtVer 7 1,
+          Praos.babbageMaxTxCapacityOverrides =
+            TxLimits.mkOverrides TxLimits.noOverridesMeasure
+        }
         -- ProtocolParamsTransition specifies the parameters needed to transition between two eras
         -- The comments below also apply for the Shelley -> Allegra and Allegra -> Mary hard forks.
         -- Byron to Shelley hard fork parameters
@@ -218,6 +229,8 @@ mkSomeConsensusProtocolCardano NodeByronProtocolConfiguration {
                -- Version 3 is Allegra
                -- Version 4 is Mary
                -- Version 5 is Alonzo
+               -- Version 6 is Alonzo (intra era hardfork)
+               -- Version 7 is Babbage
                --
                -- But we also provide an override to allow for simpler test setups
                -- such as triggering at the 0 -> 1 transition .
@@ -256,7 +269,16 @@ mkSomeConsensusProtocolCardano NodeByronProtocolConfiguration {
                             (maybe 5 fromIntegral npcTestAlonzoHardForkAtVersion)
                Just epochNo -> Consensus.TriggerHardForkAtEpoch epochNo
         }
+        -- Alonzo to Babbage hard fork parameters
+        Consensus.ProtocolTransitionParamsShelleyBased {
+          transitionTranslationContext = alonzoGenesis,
+          transitionTrigger =
+             case npcTestBabbageHardForkAtEpoch of
+                Nothing -> Consensus.TriggerHardForkAtVersion
+                             (maybe 7 fromIntegral npcTestBabbageHardForkAtVersion)
+                Just epochNo -> Consensus.TriggerHardForkAtEpoch epochNo
 
+        }
 
 ------------------------------------------------------------------------------
 -- Errors

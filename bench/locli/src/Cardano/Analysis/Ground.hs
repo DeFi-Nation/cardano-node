@@ -1,14 +1,14 @@
-{-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 module Cardano.Analysis.Ground
   ( module Cardano.Analysis.Ground
+  , module Data.DataDomain
   , BlockNo (..), EpochNo (..), SlotNo (..)
   )
 where
 
-import Prelude                          (String, show)
+import Prelude                          (String, fail, show)
 import Cardano.Prelude                  hiding (head)
 
 import Data.Aeson--                       (FromJSON (..), ToJSON (..), ToJSONKey (..), FromJSONKey (..))
@@ -25,6 +25,8 @@ import Quiet                            (Quiet (..))
 
 import Cardano.Slotting.Slot            (EpochNo(..), SlotNo(..))
 import Ouroboros.Network.Block          (BlockNo(..))
+
+import Data.DataDomain
 
 
 newtype TId = TId { unTId :: ShortText }
@@ -55,7 +57,13 @@ newtype Host = Host { unHost :: ShortText }
   deriving Show via Quiet Host
 
 instance FromJSON BlockNo where
-  parseJSON o = BlockNo <$> parseJSON o
+  parseJSON o = case o of
+    Number{}  -> BlockNo <$> parseJSON o
+    Object o' -> BlockNo <$> o' .: "unBlockNo"
+    _         -> fail "illegal type for BlockNo"
+    -- FIXME: this workaround catches a faulty JSON serialisation of BlockNo
+    -- * is:         {"unBlockNo":1790}
+    -- * should be:  1790
 instance ToJSON BlockNo where
   toJSON (BlockNo x) = toJSON x
 
@@ -99,6 +107,14 @@ newtype JsonOutputFile
   = JsonOutputFile { unJsonOutputFile :: FilePath }
   deriving (Show, Eq)
 
+newtype GnuplotOutputFile
+  = GnuplotOutputFile { unGnuplotOutputFile :: FilePath }
+  deriving (Show, Eq)
+
+newtype OrgOutputFile
+  = OrgOutputFile { unOrgOutputFile :: FilePath }
+  deriving (Show, Eq)
+
 newtype TextOutputFile
   = TextOutputFile { unTextOutputFile :: FilePath }
   deriving (Show, Eq)
@@ -125,8 +141,8 @@ data MachineTimelineOutputFiles
   }
   deriving (Show)
 
-data BlockPropagationOutputFiles
-  = BlockPropagationOutputFiles
+data BlockPropOutputFiles
+  = BlockPropOutputFiles
   { bpofForgerPretty       :: Maybe TextOutputFile
   , bpofPeersPretty        :: Maybe TextOutputFile
   , bpofPropagationPretty  :: Maybe TextOutputFile
@@ -193,6 +209,14 @@ optJsonOutputFile optname desc =
     Opt.option Opt.str
       $ long optname
       <> metavar "JSON-OUTFILE"
+      <> help desc
+
+optGnuplotOutputFile :: String -> String -> Parser GnuplotOutputFile
+optGnuplotOutputFile optname desc =
+  fmap GnuplotOutputFile $
+    Opt.option Opt.str
+      $ long optname
+      <> metavar "CDF-OUTFILE"
       <> help desc
 
 optTextOutputFile :: String -> String -> Parser TextOutputFile
@@ -287,9 +311,9 @@ parseMachineTimelineOutputFiles =
         (optCsvOutputFile "derived-vectors-1-csv"
            "Dump CSV of vectors derived from the timeline")
 
-parseBlockPropagationOutputFiles :: Parser BlockPropagationOutputFiles
-parseBlockPropagationOutputFiles =
-  BlockPropagationOutputFiles
+parseBlockPropOutputFiles :: Parser BlockPropOutputFiles
+parseBlockPropOutputFiles =
+  BlockPropOutputFiles
     <$> optional
         (optTextOutputFile "forger-text"       "Forger stats")
     <*> optional

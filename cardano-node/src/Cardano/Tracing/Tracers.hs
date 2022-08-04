@@ -76,10 +76,11 @@ import qualified Ouroboros.Consensus.Node.Run as Consensus (RunNode)
 import qualified Ouroboros.Consensus.Node.Tracers as Consensus
 import           Ouroboros.Consensus.Protocol.Abstract (ValidationErr)
 import qualified Ouroboros.Consensus.Protocol.Ledger.HotKey as HotKey
+import           Ouroboros.Consensus.Util.Enclose
 
 import qualified Ouroboros.Network.AnchoredFragment as AF
-import           Ouroboros.Network.Block (BlockNo (..), HasHeader (..), Point, StandardHash,
-                   blockNo, pointSlot, unBlockNo)
+import           Ouroboros.Network.Block (BlockNo (..), ChainUpdate (..),
+                   HasHeader (..), Point, StandardHash, blockNo, pointSlot, unBlockNo)
 import           Ouroboros.Network.BlockFetch.ClientState (TraceFetchClientState (..),
                    TraceLabelPeer (..))
 import           Ouroboros.Network.BlockFetch.Decision (FetchDecision, FetchDecline (..))
@@ -154,6 +155,7 @@ nullTracersP2P = Tracers
   , startupTracer = nullTracer
   , shutdownTracer = nullTracer
   , nodeInfoTracer = nullTracer
+  , nodeStartupInfoTracer = nullTracer
   , nodeStateTracer = nullTracer
   , resourcesTracer = nullTracer
   , peersTracer = nullTracer
@@ -170,6 +172,7 @@ nullTracersNonP2P = Tracers
   , startupTracer = nullTracer
   , shutdownTracer = nullTracer
   , nodeInfoTracer = nullTracer
+  , nodeStartupInfoTracer = nullTracer
   , nodeStateTracer = nullTracer
   , resourcesTracer = nullTracer
   , peersTracer = nullTracer
@@ -230,19 +233,23 @@ instance ElidingTracer (WithSeverity (ChainDB.TraceEvent blk)) where
   doelide (WithSeverity _ (ChainDB.TraceAddBlockEvent (ChainDB.SwitchedToAFork{}))) = False
   doelide (WithSeverity _ (ChainDB.TraceAddBlockEvent (ChainDB.AddBlockValidation (ChainDB.InvalidBlock _ _)))) = False
   doelide (WithSeverity _ (ChainDB.TraceAddBlockEvent (ChainDB.AddBlockValidation ChainDB.CandidateContainsFutureBlocksExceedingClockSkew{}))) = False
-  doelide (WithSeverity _ (ChainDB.TraceAddBlockEvent (ChainDB.AddedToCurrentChain events _ _  _))) = null events
+  doelide (WithSeverity _ (ChainDB.TraceAddBlockEvent (ChainDB.AddBlockValidation _))) = True
+  doelide (WithSeverity _ (ChainDB.TraceAddBlockEvent (ChainDB.AddedToCurrentChain events _ _ _))) = null events
+  doelide (WithSeverity _ (ChainDB.TraceAddBlockEvent (ChainDB.PipeliningEvent{}))) = True
   doelide (WithSeverity _ (ChainDB.TraceAddBlockEvent _)) = True
   doelide (WithSeverity _ (ChainDB.TraceCopyToImmutableDBEvent _)) = True
   doelide (WithSeverity _ (ChainDB.TraceInitChainSelEvent (ChainDB.InitChainSelValidation (ChainDB.UpdateLedgerDbTraceEvent{})))) = True
   doelide _ = False
+
   conteliding _tverb _tr _ (Nothing, _count) = return (Nothing, 0)
   conteliding tverb tr ev@(WithSeverity _ (ChainDB.TraceAddBlockEvent ChainDB.AddedToCurrentChain{})) (_old, oldt) = do
-      tnow <- fromIntegral <$> getMonotonicTimeNSec
-      let deltat = tnow - oldt
+      tnow <- getMonotonicTimeNSec
+      let tnow' = fromIntegral tnow
+          deltat = tnow' - oldt
       if deltat > 1250000000 -- report at most every 1250 ms
         then do
           traceWith (toLogObject' tverb tr) ev
-          return (Just ev, tnow)
+          return (Just ev, tnow')
         else return (Just ev, oldt)
   conteliding _tverb _tr ev@(WithSeverity _ (ChainDB.TraceAddBlockEvent _)) (_old, count) =
       return (Just ev, count)
@@ -328,6 +335,7 @@ mkTracers blockConfig tOpts@(TracingOnLegacy trSel) tr nodeKern ekgDirect enable
     , shutdownTracer = toLogObject' verb $ appendName "shutdown" tr
     -- The remaining tracers are completely unused by the legacy tracing:
     , nodeInfoTracer = nullTracer
+    , nodeStartupInfoTracer = nullTracer
     , nodeStateTracer = nullTracer
     , resourcesTracer = nullTracer
     , peersTracer = nullTracer
@@ -460,7 +468,6 @@ mkTracers _ _ _ _ _ enableP2P =
       , NodeToNode.tChainSyncSerialisedTracer = nullTracer
       , NodeToNode.tBlockFetchTracer = nullTracer
       , NodeToNode.tBlockFetchSerialisedTracer = nullTracer
-      , NodeToNode.tTxSubmissionTracer = nullTracer
       , NodeToNode.tTxSubmission2Tracer = nullTracer
       }
     , diffusionTracers = Diffusion.nullTracers
@@ -471,6 +478,7 @@ mkTracers _ _ _ _ _ enableP2P =
     , startupTracer = nullTracer
     , shutdownTracer = nullTracer
     , nodeInfoTracer = nullTracer
+    , nodeStartupInfoTracer = nullTracer
     , nodeStateTracer = nullTracer
     , resourcesTracer = nullTracer
     , peersTracer = nullTracer
@@ -609,7 +617,7 @@ sendEKGDirectDouble ekgDirect name val = do
 --------------------------------------------------------------------------------
 
 isRollForward :: TraceChainSyncServerEvent blk -> Bool
-isRollForward (TraceChainSyncRollForward _) = True
+isRollForward (TraceChainSyncServerUpdate _tip (AddBlock _pt) _blocking FallingEdge) = True
 isRollForward _ = False
 
 mkConsensusTracers
@@ -983,6 +991,8 @@ teeForge ft tverb tr = Tracer $
       Consensus.TraceNodeCannotForge {} -> teeForge' (ftTraceNodeCannotForge ft)
       Consensus.TraceNodeNotLeader{} -> teeForge' (ftTraceNodeNotLeader ft)
       Consensus.TraceNodeIsLeader{} -> teeForge' (ftTraceNodeIsLeader ft)
+      Consensus.TraceForgeTickedLedgerState{} -> nullTracer
+      Consensus.TraceForgingMempoolSnapshot{} -> nullTracer
       Consensus.TraceForgedBlock{} -> teeForge' (ftForged ft)
       Consensus.TraceDidntAdoptBlock{} -> teeForge' (ftDidntAdoptBlock ft)
       Consensus.TraceForgedInvalidBlock{} -> teeForge' (ftForgedInvalid ft)
@@ -1023,6 +1033,10 @@ teeForge' tr =
           LogValue "nodeNotLeader" $ PureI $ fromIntegral $ unSlotNo slot
         Consensus.TraceNodeIsLeader slot ->
           LogValue "nodeIsLeader" $ PureI $ fromIntegral $ unSlotNo slot
+        Consensus.TraceForgeTickedLedgerState slot _prevPt ->
+          LogValue "forgeTickedLedgerState" $ PureI $ fromIntegral $ unSlotNo slot
+        Consensus.TraceForgingMempoolSnapshot slot _prevPt _mpHash _mpSlotNo ->
+          LogValue "forgingMempoolSnapshot" $ PureI $ fromIntegral $ unSlotNo slot
         Consensus.TraceForgedBlock slot _ _ _ ->
           LogValue "forgedSlotLast" $ PureI $ fromIntegral $ unSlotNo slot
         Consensus.TraceDidntAdoptBlock slot _ ->
@@ -1316,9 +1330,6 @@ nodeToNodeTracers' trSel verb tr =
   , NodeToNode.tBlockFetchSerialisedTracer =
       showOnOff (traceBlockFetchProtocolSerialised trSel)
                 "BlockFetchProtocolSerialised" tr
-  , NodeToNode.tTxSubmissionTracer =
-      tracerOnOff (traceTxSubmissionProtocol trSel)
-                  verb "TxSubmissionProtocol" tr
   , NodeToNode.tTxSubmission2Tracer =
       tracerOnOff (traceTxSubmissionProtocol trSel)
                   verb "TxSubmissionProtocol" tr

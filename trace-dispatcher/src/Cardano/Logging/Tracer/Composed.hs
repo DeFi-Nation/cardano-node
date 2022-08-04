@@ -4,6 +4,7 @@ module Cardano.Logging.Tracer.Composed (
     mkCardanoTracer
   , mkCardanoTracer'
   , mkDataPointTracer
+  , mkMetricsTracer
   , MessageOrLimit(..)
   , documentTracer
   ) where
@@ -51,13 +52,13 @@ mkCardanoTracer :: forall evt.
   => Trace IO FormattedMessage
   -> Trace IO FormattedMessage
   -> Maybe (Trace IO FormattedMessage)
-  -> Text
+  -> [Text]
   -> (evt -> [Text])
   -> (evt -> SeverityS)
   -> (evt -> Privacy)
   -> IO (Trace IO evt)
-mkCardanoTracer trStdout trForward mbTrEkg name namesFor severityFor privacyFor =
-    mkCardanoTracer' trStdout trForward mbTrEkg name namesFor severityFor
+mkCardanoTracer trStdout trForward mbTrEkg tracerName namesFor severityFor privacyFor =
+    mkCardanoTracer' trStdout trForward mbTrEkg tracerName namesFor severityFor
         privacyFor noHook
   where
     noHook :: Trace IO evt -> IO (Trace IO evt)
@@ -69,29 +70,37 @@ mkCardanoTracer' :: forall evt evt1.
   => Trace IO FormattedMessage
   -> Trace IO FormattedMessage
   -> Maybe (Trace IO FormattedMessage)
-  -> Text
+  -> [Text]
   -> (evt -> [Text])
   -> (evt -> SeverityS)
   -> (evt -> Privacy)
   -> (Trace IO evt1 -> IO (Trace IO evt))
   -> IO (Trace IO evt)
-mkCardanoTracer' trStdout trForward mbTrEkg name namesFor severityFor privacyFor
+mkCardanoTracer' trStdout trForward mbTrEkg tracerName namesFor severityFor privacyFor
   hook = do
-    tr    <- withBackendsFromConfig backendsAndFormat
-    tr'   <- withLimitersFromConfig (NT.contramap Message tr) (NT.contramap Limit tr)
-    tr''  <- hook tr'
-    addContextAndFilter tr''
+    messageTrace   <- withBackendsFromConfig backendsAndFormat
+    messageTrace'  <- withLimitersFromConfig
+                          (NT.contramap Message messageTrace)
+                          (NT.contramap Limit messageTrace)
+    messageTrace'' <- hook messageTrace'
+    messageTrace''' <- addContextAndFilter messageTrace''
+    let metricsTrace = case mbTrEkg of
+                          Nothing -> Trace NT.nullTracer
+                          Just ekgTrace -> metricsFormatter "Cardano" ekgTrace
+    let metricsTrace' = filterTrace (\(_,v) -> asMetrics v /= []) metricsTrace
+    metricsTrace'' <- hook metricsTrace'
+    pure $ messageTrace''' <> metricsTrace''
+
   where
     addContextAndFilter :: Trace IO evt -> IO (Trace IO evt)
     addContextAndFilter tr = do
       tr'  <- withDetailsFromConfig tr
       tr'' <- filterSeverityFromConfig tr'
-      pure $ withNamesAppended namesFor
-            $ appendName name
-              $ appendName "Node"
-                $ withSeverity severityFor
-                  $ withPrivacy privacyFor
-                    tr''
+      pure  $ withNamesAppended namesFor
+              $ appendNames tracerName
+               $ withSeverity severityFor
+                 $ withPrivacy privacyFor
+                   tr''
 
     backendsAndFormat ::
          Maybe [BackendConfig]
@@ -102,30 +111,23 @@ mkCardanoTracer' trStdout trForward mbTrEkg name namesFor severityFor privacyFor
                       [EKGBackend, Forwarder, Stdout HumanFormatColoured]
                       mbBackends
       in do
-        mbEkgTrace     <- case mbTrEkg of
-                            Nothing -> pure Nothing
-                            Just ekgTrace ->
-                              if EKGBackend `elem` backends'
-                                then pure $ Just
-                                      (metricsFormatter "Cardano" ekgTrace)
-                                else pure Nothing
         mbForwardTrace <- if Forwarder `elem` backends'
                             then fmap (Just . filterTraceByPrivacy (Just Public))
-                                  (forwardFormatter "Cardano" trForward)
+                                  (forwardFormatter Nothing trForward)
                             else pure Nothing
         mbStdoutTrace  <-  if Stdout HumanFormatColoured `elem` backends'
                             then fmap Just
-                                (humanFormatter True "Cardano" trStdout)
+                                (humanFormatter True Nothing trStdout)
                             else if Stdout HumanFormatUncoloured `elem` backends'
                               then fmap Just
-                                  (humanFormatter False "Cardano" trStdout)
+                                  (humanFormatter False Nothing trStdout)
                               else if Stdout MachineFormat `elem` backends'
                                 then fmap Just
-                                  (machineFormatter "Cardano" trStdout)
+                                  (machineFormatter Nothing trStdout)
                                 else pure Nothing
-        case mbEkgTrace <> mbForwardTrace <> mbStdoutTrace of
+        case mbForwardTrace <> mbStdoutTrace of
           Nothing -> pure $ Trace NT.nullTracer
-          Just tr -> pure (preFormatted backends' tr)
+          Just tr -> pure $ preFormatted backends' tr
 
 -- A simple dataPointTracer which supports building a namespace.
 mkDataPointTracer :: forall dp. ToJSON dp
@@ -135,6 +137,9 @@ mkDataPointTracer :: forall dp. ToJSON dp
 mkDataPointTracer trDataPoint namesFor = do
     let tr = NT.contramap DataPoint trDataPoint
     pure $ withNamesAppended namesFor tr
+
+mkMetricsTracer :: Maybe (Trace IO FormattedMessage) -> Trace IO FormattedMessage
+mkMetricsTracer = fromMaybe mempty
 
 documentTracer ::
      TraceConfig

@@ -51,14 +51,12 @@ import           Cardano.Api.Shelley
 
 import           Data.Text (Text)
 
-import           Ouroboros.Consensus.BlockchainTime (SystemStart (..))
-
 import           Cardano.CLI.Shelley.Key (PaymentVerifier, StakeVerifier, VerificationKeyOrFile,
                    VerificationKeyOrHashOrFile, VerificationKeyTextOrFile)
 import           Cardano.CLI.Types
 
-import           Cardano.Ledger.Shelley.TxBody (MIRPot)
 import           Cardano.Chain.Common (BlockCount)
+import           Cardano.Ledger.Shelley.TxBody (MIRPot)
 --
 -- Shelley CLI command data types
 --
@@ -165,13 +163,13 @@ data TransactionCmd
       [(TxIn, Maybe (ScriptWitnessFiles WitCtxTxIn))]
       -- ^ Transaction inputs with optional spending scripts
       [TxIn]
+      -- ^ Read only reference inputs
+      [TxIn]
       -- ^ Transaction inputs for collateral, only key witnesses, no scripts.
       (Maybe TxOutAnyEra)
       -- ^ Return collateral
       (Maybe Lovelace)
       -- ^ Total collateral
-      [TxIn]
-      -- ^ Reference inputs
       [RequiredSigner]
       -- ^ Required signers
       [TxOutAnyEra]
@@ -204,6 +202,8 @@ data TransactionCmd
       (Maybe Word)
       -- ^ Override the required number of tx witnesses
       [(TxIn, Maybe (ScriptWitnessFiles WitCtxTxIn))]
+      -- ^ Read only reference inputs
+      [TxIn]
       -- ^ Required signers
       [RequiredSigner]
       -- ^ Transaction inputs with optional spending scripts
@@ -213,8 +213,6 @@ data TransactionCmd
       -- ^ Return collateral
       (Maybe Lovelace)
       -- ^ Total collateral
-      [TxIn]
-      -- ^ Reference inputs
       [TxOutAnyEra]
       -- ^ Normal outputs
       TxOutChangeAddress
@@ -368,13 +366,13 @@ data QueryCmd =
   | QueryDebugLedgerState' AnyConsensusModeParams NetworkId (Maybe OutputFile)
   | QueryProtocolState' AnyConsensusModeParams NetworkId (Maybe OutputFile)
   | QueryStakeSnapshot' AnyConsensusModeParams NetworkId (Hash StakePoolKey)
-  | QueryPoolParams' AnyConsensusModeParams NetworkId (Hash StakePoolKey)
   | QueryKesPeriodInfo
       AnyConsensusModeParams
       NetworkId
       FilePath
       -- ^ Node operational certificate
       (Maybe OutputFile)
+  | QueryPoolState' AnyConsensusModeParams NetworkId [Hash StakePoolKey]
   deriving Show
 
 renderQueryCmd :: QueryCmd -> Text
@@ -390,8 +388,8 @@ renderQueryCmd cmd =
     QueryDebugLedgerState' {} -> "query ledger-state"
     QueryProtocolState' {} -> "query protocol-state"
     QueryStakeSnapshot' {} -> "query stake-snapshot"
-    QueryPoolParams' {} -> "query pool-params"
     QueryKesPeriodInfo {} -> "query kes-period-info"
+    QueryPoolState' {} -> "query pool-state"
 
 data GovernanceCmd
   = GovernanceMIRPayStakeAddressesCertificate
@@ -408,6 +406,7 @@ data GovernanceCmd
   | GovernanceUpdateProposal OutputFile EpochNo
                              [VerificationKeyFile]
                              ProtocolParametersUpdate
+                             (Maybe FilePath)
   deriving Show
 
 renderGovernanceCmd :: GovernanceCmd -> Text

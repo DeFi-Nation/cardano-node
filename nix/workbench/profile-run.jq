@@ -4,8 +4,9 @@ def profile_timing($prof;
                    $start_human;
                    $start_tag;
                    $systemStart):
-  ($systemStart | fromdateiso8601 | . + $prof.derived.shutdown_time)      as $shutdown_end
-| ($systemStart | fromdateiso8601 | . + $prof.derived.generator_duration) as $workload_end
+  ($systemStart | fromdateiso8601 | . + $prof.derived.generator_duration)   as $workload_end
+| ($systemStart | fromdateiso8601 | . + ($prof.derived.shutdown_time
+                                      // $prof.derived.generator_duration)) as $shutdown_end
 | ( [$shutdown_end, $workload_end]
   | map(select(. != null))
   | min)                                                                as $earliest_end
@@ -42,6 +43,7 @@ def profile_node_specs($env; $prof):
    | map({ i: .
          , kind: "bft"
          , pools: 0
+         , autostart: true
          }))
    as $bfts
 | ([range($n_bfts;
@@ -51,6 +53,7 @@ def profile_node_specs($env; $prof):
          , pools: (if . - $n_bfts < $n_singular_pools
                    then 1
                    else $prof.composition.dense_pool_density end)
+         , autostart: true
          }))
    as $pools
 | ([range($n_bfts + $n_pools;
@@ -59,19 +62,34 @@ def profile_node_specs($env; $prof):
    | map({ i: .
          , kind: "proxy"
          , pools: 0
+         , autostart: true
          }))
    as $proxies
 | ([range($n_bfts + $n_pools
           + if $prof.composition.with_proxy then 1 else 0 end;
           $n_bfts + $n_pools
           + if $prof.composition.with_proxy then 1 else 0 end
+          + if $prof.composition.with_chaindb_server then 1 else 0 end)]
+   | map({ i: .
+         , kind: "chaindb-server"
+         , pools: 0
+         , autostart: true
+         }))
+   as $chaindbs
+| ([range($n_bfts + $n_pools
+          + if $prof.composition.with_proxy then 1 else 0 end
+          + if $prof.composition.with_chaindb_server then 1 else 0 end;
+          $n_bfts + $n_pools
+          + if $prof.composition.with_proxy then 1 else 0 end
+          + if $prof.composition.with_chaindb_server then 1 else 0 end
           + if $prof.composition.with_observer then 1 else 0 end)]
    | map({ i: .
          , kind: "observer"
          , pools: 0
+         , autostart: false
          }))
    as $observers
-| ($bfts + $pools + $proxies + $observers
+| ($bfts + $pools + $proxies + $chaindbs + $observers
    | map(. +
          { name:       "node-\(.["i"])"
          , isProducer: ([.kind == "bft", .kind == "pool"] | any)

@@ -1,5 +1,4 @@
 global_rundir_def=$PWD/run
-global_rundir_alt_def=$PWD/../cardano-ops/runs
 
 usage_run() {
      usage "run" "Managing cluster runs" <<EOF
@@ -17,7 +16,7 @@ usage_run() {
                             --scenario forces a scenario, different from what
                                 is implied by the run profile;
                                 See 'wb scenario --help' for scenario descriptions
-                            --idle is a short-cut for the 'generic-idle' scenario
+                            --idle is a short-cut for '--scenario idle'
                             --analyse triggers analysis after 'start' returns
 
     stop TAG              Stop the named run
@@ -28,18 +27,18 @@ usage_run() {
   Options:
 
     --rundir DIR          Set the runs directory.  Defaults to $global_rundir_def,
-                            if it exists, otherwise to \$WORKBENCH_RUNDIR, if that
+                            if it exists, otherwise to \$WB_RUNDIR, if that
                             exists, and finally unconditionally to $global_rundir_def.
 EOF
 }
 
 run() {
 set -eu
-if   test -d "$global_rundir_def"
-then global_rundir=$global_rundir_def
+if   test -v "WB_RUNDIR" && test -d "$WB_RUNDIR"
+then global_rundir=$WB_RUNDIR
 ## Allow compatibility with cardano-ops legacy runs directory layout:
-elif test -v "WORKBENCH_RUNDIR" && test -d "$WORKBENCH_RUNDIR"
-then global_rundir=$WORKBENCH_RUNDIR
+elif test -d "$global_rundir_def"
+then global_rundir=$global_rundir_def
 else global_rundir=$global_rundir_def
      mkdir "$global_rundir"
 fi
@@ -52,12 +51,23 @@ do case "$1" in
 local op=${1:-list}; test $# -gt 0 && shift
 
 case "$op" in
+    get-rundir )
+        echo $global_rundir;;
+
     list | ls )
         test -d "$global_rundir" &&
             (cd "$global_rundir"
              find . -mindepth 2 -maxdepth 2 -type f -name 'meta.json' -exec dirname \{\} \; |
                  grep -v 'current$\|deploy-logs$' |
                  cut -c3- |
+                 sort || true);;
+
+    list-pattern | lsp )
+        test -d "$global_rundir" &&
+            (cd "$global_rundir"
+             ls $1/meta.json |
+                 grep -v 'current$\|deploy-logs$' |
+                 cut -d/ -f1 |
                  sort || true);;
 
     compute-path )
@@ -96,8 +106,12 @@ case "$op" in
         local tag=${1:?$usage}
         local dir=$(run compute-path "$tag")
 
-        jq_check_json "$dir"/meta.json ||
-            fatal "run $tag (at $dir) missing a file:  meta.json"
+        if ! jq_check_json "$dir"/meta.json
+        then if test $tag = 'current'
+             then local alt=$(run list | tail -n1)
+                  progress 'run | check' "$(with_color white current) missing, resetting to $(with_color white $alt)"
+                  run set-current $alt
+             else fatal "run $tag (at $dir) missing a file:  meta.json"; fi; fi
 
         test -f "$dir"/profile.json -a -f "$dir"/genesis-shelley.json ||
             run fix-legacy-run-structure "$tag";;
@@ -225,23 +239,92 @@ case "$op" in
 
         echo $dir;;
 
+    list-aws | lsaws )
+        local usage="USAGE: wb run $op [DEPLOYMENT=bench-1] [ENV=bench]"
+        local depl=${1:-bench-1}
+        local env=${2:-bench}
+
+        ssh $env -- \
+            sh -c "'cd $depl/runs &&
+                    find . -mindepth 2 -maxdepth 2 -type f -name 'meta.json' -exec dirname \{\} \; |
+                    grep -v current\$\\|deploy-logs\$ |
+                    cut -c3- |
+                    sort ||
+                    true'" 2>/dev/null;;
+
+    allocate-from-aws | aws-get )
+        local usage="USAGE: wb run $op RUN [MACHINE] [DEPLOYMENT=bench-1] [ENV=bench]"
+        local run=${1:?$usage}
+        local mach=${2:-}
+        local depl=${3:-bench-1}
+        local env=${4:-bench}
+
+        local args=(
+            "$run"
+            'if test -f compressed/logs-$obj.tar.zst; then cat compressed/logs-$obj.tar.zst; else tar c $obj --zstd --ignore-failed-read; fi'
+            $mach
+            $depl
+            $env
+        )
+        run_aws_get "${args[@]}";;
+
+    analysis-from-aws | aws-get-analysis | aws-geta | fetch-analysis | fa )
+        local usage="USAGE: wb run $op RUN.."
+        local runs=($*) run
+        local env='bench'
+        local depl='bench-1'
+
+        progress "aws" "trying to fetch analyses:  $(white ${runs[*]})"
+        for run in ${runs[*]}
+        do if   test "$(ssh $env -- sh -c "'ls -ld $depl/runs/$run          | wc -l'")" = 0
+           then fail "aws-analysis:  run does not exist on AWS: $(white $run)"
+           elif test "$(ssh $env -- sh -c "'ls -ld $depl/runs/$run/analysis | wc -l'")" = 0
+           then fail "aws-analysis:  run has not been analysed on AWS: $(white $run)"
+           else run_aws_get "$run" '{ ls {profile,machines}.json analysis/*.{json,cdf,org,txt} |
+                                                                              grep -v flt.json |
+                                                                      grep -v flt.logobjs.json |
+                           xargs tar c --ignore-failed-read --zstd; }' 'explorer' "$depl" "$env"
+           fi
+        done
+        ;;
+
+    analyse-aws | awsa )
+        local usage="USAGE: wb run $op RUN [MACHINE] [DEPLOYMENT=bench-1] [ENV=bench]"
+        local run=${1:?$usage}
+        local mach=${2:-}
+        local depl=${3:-bench-1}
+        local env=${4:-bench}
+
+        if   test "$(ssh $env -- sh -c "'ls -ld $depl/runs/$run          | wc -l'")" = 0
+        then fail "aws-analysis:  run does not exist on AWS: $(white $run)"
+        else ssh $env -- sh -c "'export WB_RUNDIR=../$depl/runs && cd cardano-node && echo env: $(yellow $env), rundir: $(color blue)\$WB_RUNDIR$(color reset), workbench: $(color yellow)\$(git log -n1)$(color reset) && make analyse TAG=$run'"
+        fi
+        ;;
+
     allocate )
         local usage="USAGE: wb run $op BATCH-NAME PROFILE-NAME [ENV-CONFIG-OPTS..] [-- BACKEND-ARGS-AND-ENV-CONFIG-OPTS..]"
         local batch=${1:?$usage}; shift
         local profile_name=${1:?$usage}; shift
 
-        local profile= topology= genesis_cache_entry= manifest=
+        local profile= topology= genesis_cache_entry= manifest= preset= cabal_mode=
         while test $# -gt 0
         do case "$1" in
                --manifest )            manifest=$2; shift;;
                --profile )             profile=$2; shift;;
                --topology )            topology=$2; shift;;
                --genesis-cache-entry ) genesis_cache_entry=$2; shift;;
+               --cabal-mode | --cabal ) cabal_mode=t;;
                -- ) shift; break;;
                --* ) msg "FATAL:  unknown flag '$1'"; usage_run;;
                * ) break;; esac; shift; done
 
-        progress "run" "allocating a new one.."
+        local node_specs="$profile"/node-specs.json
+
+        if profile has-preset "$profile"/profile.json
+        then preset=$(profile json "$profile"/profile.json | jq '.preset' -r)
+             progress "run" "allocating from preset '$preset'"
+        else progress "run" "allocating a new one"
+        fi
 
         ## 0. report software manifest
         progress "run | manifest" "component versions:"
@@ -249,7 +332,6 @@ case "$op" in
         local hash=$(jq '."cardano-node" | .[:5]' -r <<<$manifest)
 
         ## 1. compute cluster composition
-        local node_specs=$(profile node-specs "$profile"/profile.json)
 
         ## 2. genesis cache entry population
         progress "run | genesis" "cache entry:  $(if test -n "$genesis_cache_entry"; then echo pre-supplied; else echo preparing a new one..; fi)"
@@ -277,7 +359,7 @@ case "$op" in
         profile describe-timing "$timing"
 
         ## 3. decide the tag:
-        local tag=$(jq '.start_tag' -r <<<$timing)$(if test "$batch" != 'plain'; then echo -n .$batch; fi).$hash.$profile_name
+        local tag=$(jq '.start_tag' -r <<<$timing)$(if test "$batch" != 'plain'; then echo -n .$batch; fi).$hash.$profile_name$(test -z "$cabal_mode" && echo '.nix')
         progress "run | tag" "allocated run identifier (tag):  $(with_color white $tag)"
 
         ## 4. allocate directory:
@@ -297,14 +379,12 @@ case "$op" in
         then
             test "$(jq -r .name $profile/profile.json)" = "$profile_name" ||
                 fatal "profile | allocate incoherence:  --profile $profile/profile.json mismatches '$profile_name'"
-            ln -s "$profile"              "$dir"/profile
-            cp    "$profile"/profile.json "$dir"/profile.json
+            ln -s "$profile"                 "$dir"/profile
+            cp    "$profile"/profile.json    "$dir"/profile.json
+            cp    "$profile"/node-specs.json "$dir"/node-specs.json
         else
-            profile has-profile          "$profile_name" ||
-                fatal  "no such profile:  $profile_name"
-            profile json-by-name         "$profile_name" > "$dir"/profile.json
+            fail "Mode no longer supported:  operation without profile/ directory."
         fi
-        jq '.' <<<$node_specs > "$dir"/node-specs.json
 
         local args=(
             --arg       tag              "$tag"
@@ -332,13 +412,14 @@ case "$op" in
         else topology make    "$dir"/profile.json "$dir"/topology
         fi
 
-        if test   -n "$genesis_cache_entry"
-        then genesis derive-from-cache      \
+        if      test -z "$genesis_cache_entry"
+        then fail "internal error:  no genesis cache entry"
+
+        else genesis derive-from-cache      \
                      "$profile"             \
                      "$timing"              \
                      "$genesis_cache_entry" \
                      "$dir"/genesis
-        else fail "internal error:  no genesis cache entry"
         fi
         ## Record geneses
         cp "$dir"/genesis/genesis-shelley.json "$dir"/genesis-shelley.json
@@ -364,6 +445,14 @@ case "$op" in
         cp $(jq '."start"'          -r $gtor) "$gen_dir"/start.sh
         ln -s          ../node-0/config.json  "$gen_dir"
 
+        local trac=$profile/tracer-service.json
+        trac_dir="$dir"/tracer
+        mkdir -p                              "$trac_dir"
+        cp $(jq '."tracer-config"'        -r $trac) "$trac_dir"/tracer-config.json
+        cp $(jq '."nixos-service-config"' -r $trac) "$trac_dir"/nixos-service-config.json
+        cp $(jq '."config"'               -r $trac) "$trac_dir"/config.json
+        cp $(jq '."start"'                -r $trac) "$trac_dir"/start.sh
+
         backend allocate-run "$dir"
 
         progress "run" "allocated $(with_color white $tag) @ $dir"
@@ -380,18 +469,6 @@ case "$op" in
         if test -f "$dir"/node-specs.json
         then jq             'keys | .[]' -r "$dir"/node-specs.json
         else jq '.hostname | keys | .[]' -r "$dir"/meta.json; fi;;
-
-    fetch-analysis | fa )
-        local usage="USAGE: wb run $op ENV DEPL BATCH-OR-TAG.."
-        local   env=${1:?$usage}; shift
-        local  depl=${1:?$usage}; shift
-
-        for x in $*
-        do
-            ssh $env -- \
-                sh -c "'cd $depl/runs && tar c {*.$x.*,$x}/analysis/{block-propagation,logs-node-1.timeline}.txt --zstd --ignore-failed-read'" 2>/dev/null |
-                (cd run; tar x --zstd); done
-        ;;
 
     remote-machine-run-slice-list | rmrsl )
         local usage="USAGE: wb run $op ENV DEPL [HOST=DEPL]"
@@ -422,6 +499,22 @@ case "$op" in
             sh -c "cd $depl && tar c $depl/node-$slice.json --zstd" |
             (cd $dir; tar x --zstd)
         ;;
+
+    trim )
+        local usage="USAGE: wb run $op TAG"
+        local tag=${1:?$usage}
+        local dir=$global_rundir/$tag
+        local genesis="$dir"/genesis-shelley.json
+        local genesis_orig="$genesis".orig
+
+        local size=$(ls -s "$genesis" | cut -d' ' -f1)
+        if test "$size" -gt 1000
+        then progress "run" "genesis size: ${size}k, trimming.."
+             mv   "$genesis" "$genesis_orig"
+             jq > "$genesis" '
+               .initialFunds = {}
+             | .staking      = {}
+             ' "$genesis_orig"; fi;;
 
     describe )
         local usage="USAGE: wb run $op TAG"
@@ -464,13 +557,14 @@ EOF
     start )
         local usage="USAGE: wb run $op [--idle] [--scenario NAME] [--analyse] TAG"
 
-        local scenario_override= analyse= analysis_can_fail=
+        local scenario_override= analyse=yes analysis_can_fail=
         while test $# -gt 0
         do case "$1" in
                --idle )              scenario_override='generic-idle';;
                --scenario | -s )     scenario_override=$2; shift;;
-               --analyse | -a )      analyse=t;;
-               --analysis-can-fail ) analysis_can_fail=t;;
+               --no-analysis )       analyse=;;
+               --analysis-can-fail | -f )
+                                     analysis_can_fail=t;;
                --* ) msg "FATAL:  unknown flag '$1'"; usage_run;;
                * ) break;; esac; shift; done
 
@@ -488,14 +582,6 @@ EOF
         scenario "$scenario" "$dir"
 
         run compat-meta-fixups "$tag"
-        if test -n "$analyse"
-        then progress "run | analysis" "processing logs of $(with_color white $tag)"
-             analyse std $tag ||
-                 if test -n "$analysis_can_fail"
-                 then progress "run | analysis" "log processing failed, but --analysis-can-fail prevents failure:  $(with_color red $tag)"
-                 else fail "analysis failed:  $tag"
-                     false; fi
-        fi
         ;;
 
     stop )
@@ -530,4 +616,56 @@ EOF
         ;;
 
     * ) usage_run;; esac
+}
+
+run_aws_get() {
+    local usage='USAGE: run_aws_get RUN REMOTE-TAR-CMD [MACHINE] [DEPLOYMENT] [ENV]'
+    local run=${1:?$usage}
+    local remote_tar_cmd=${2:?$usage}
+    local mach=${3:-}
+    local depl=${4:-bench-1}
+    local env=${5:-bench}
+
+    progress "aws-get" "mach $(yellow $mach) depl $(yellow $depl) run $(white $run)"
+    progress "aws-get" "selector $(green $remote_tar_cmd)"
+
+    local meta=$(ssh $env -- sh -c "'jq . $depl/runs/$run/meta.json'")
+    if ! jq . <<<$meta >/dev/null
+    then fail "allocate-from-aws:  malformed $(yellow meta.json) in $(white $run) on $(white $depl)@$(white env)"; fi
+
+    ## Minor validation passed, create & populate run with remote data:
+    local dir=$global_rundir/$run
+    mkdir -p "$dir"
+    jq . <<<$meta > $dir/meta.json
+
+    local hosts=($(if test -n "$mach"; then echo $mach
+                   else jq -r '.hostname | keys | .[]' <<<$meta; fi))
+    local objects=(
+        ${hosts[*]}
+        genesis-alonzo.json
+        genesis-shelley.json
+        machines.json
+        network-latency-matrix.json
+        profile.json
+    )
+
+    local count=${#objects[*]}
+    progress "run | aws-get $(white $run)" "objects to fetch:  $(white $count) total:  $(yellow ${objects[*]})"
+
+    local max_batch=9 base=0 batch
+    while test $base -lt $count
+    do local batch=(${objects[*]:$base:$max_batch})
+       progress_ne "run | aws-get $(white $run)" "fetching batch: "
+       local obj=
+       for obj in ${batch[*]}
+       do { ssh $env -- \
+                sh -c "'cd $depl/runs/$run && ${remote_tar_cmd}'" 2>/dev/null |
+                (cd $dir; tar x --zstd)
+            echo -ne " $(yellow $obj)" >&2
+          } &
+       done
+       wait
+       echo >&2
+       base=$((base + max_batch))
+    done
 }

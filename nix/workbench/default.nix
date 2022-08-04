@@ -1,5 +1,6 @@
 { pkgs
 , lib, jq, runCommand
+, db-analyser
 , cardanoNodePackages
 }:
 
@@ -32,7 +33,7 @@ let
       dontStrip = true;
     };
 
-  workbench = with cardanoNodePackages; with pkgs; workbench'
+  workbench = with cardanoNodePackages; with pkgs; workbench' (
     [ git graphviz
       jq
       moreutils
@@ -40,8 +41,9 @@ let
 
       cardano-cli
       cardano-topology
+    ] ++ lib.optional (!pkgs.stdenv.hostPlatform.isDarwin) db-analyser ++ [
       locli
-    ];
+    ]);
 
   runWorkbench =
     name: command:
@@ -116,7 +118,7 @@ let
 
       topology = profile-topology { inherit profileNix profile; };
 
-      genesis = profile-topology-genesis { inherit profileNix profile topology; };
+      genesis = profile-topology-genesis { inherit profile; };
     in {
       inherit
         profileNix profile

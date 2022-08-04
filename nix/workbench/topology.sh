@@ -93,15 +93,13 @@ case "${op}" in
         ;;
 
     density-map )
-        local usage="USAGE:  wb topology density-map PROFILE-JSON NODE-SPECS"
-        local profile_json=${1:?$usage}
-        local node_specs=${2:?$usage}
+        local usage="USAGE:  wb topology density-map NODE-SPECS-JSON"
+        local node_specs_json=${1:?$usage}
 
-        args=(--slurpfile profile  "$profile_json"
-              --argjson   node_specs "$node_specs"
+        args=(--slurpfile node_specs "$node_specs_json"
               --null-input --compact-output
              )
-        jq ' $node_specs
+        jq ' $node_specs[0]
            | map
              ({ key:   "\(.i)"
               , value: ((.pools) // 0)
@@ -117,28 +115,17 @@ case "${op}" in
         local topo_dir=${4:?$usage}
         local basePort=${5:?$usage}
 
-        local prof=$(profile json-by-name $profile)
+        local prof=$(profile json $profile)
 
         case "$role" in
         local-bft | local-pool )
-            args=(--slurpfile topology "$topo_dir"/topology-nixops.json
+            args=(-L$global_basedir
+                  --slurpfile topology "$topo_dir"/topology-nixops.json
                   --argjson   basePort $basePort
-                  --argjson   i         $i
+                  --argjson   i        $i
                   --null-input
                  )
-            jq '
-            def loopback_node_topology_from_nixops_topology($topo; $i):
-                $topo.coreNodes[$i].producers                      as $producers
-              | ($producers | map(ltrimstr("node-") | fromjson))   as $prod_indices
-              | { Producers:
-                  ( $prod_indices
-                    | map
-                      ({ addr:    "127.0.0.1"
-                      , port:    ($basePort + .)
-                      , valency: 1
-                      }
-                      ))
-                };
+            jq 'include "topology";
 
             loopback_node_topology_from_nixops_topology($topology[0]; $i)
             ' "${args[@]}";;
@@ -148,26 +135,17 @@ case "${op}" in
             local topo_proxy=$(profile preset-get-file "$preset" 'proxy topology' 'topology-proxy.json')
 
             jq . "$topo_proxy";;
+        local-chaindb-server )
+            ## ChainDB servers are just that:
+            jq --null-input "{ Producers: [] }";;
         local-observer )
-            args=(--slurpfile topology "$topo_dir"/topology-nixops.json
-                  --argjson   basePort $basePort
-                  --null-input
+            args=(-L$global_basedir
+                  --argjson   basePort     $basePort
                  )
-            jq '
-            def loopback_observer_topology_from_nixops_topology($topo):
-              [range(0; $topo.coreNodes | length)] as $prod_indices
-            | { Producers:
-                ( $prod_indices
-                | map
-                  ({ addr:    "127.0.0.1"
-                   , port:    ($basePort + .)
-                   , valency: 1
-                   }
-                  ))
-              };
+            jq 'include "topology";
 
-            loopback_observer_topology_from_nixops_topology($topology[0])
-            ' "${args[@]}";;
+            composition_observer_topology_loopback(.composition; $basePort)
+            ' "${args[@]}" <<<$prof;;
         * ) fail "unhandled role for topology node '$i': '$role'";;
         esac;;
 

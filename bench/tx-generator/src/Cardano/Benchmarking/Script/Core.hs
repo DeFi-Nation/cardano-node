@@ -6,8 +6,9 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NumericUnderscores #-}
+{-# LANGUAGE PackageImports #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE RankNTypes #-} --
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -15,49 +16,50 @@
 module Cardano.Benchmarking.Script.Core
 where
 
-import           Prelude
+import           Control.Concurrent (threadDelay)
+import           Control.Monad
+import           Control.Monad.IO.Class
+import           Control.Monad.Trans.Except
+import           "contra-tracer" Control.Tracer (nullTracer)
 import           Data.Ratio ((%))
 import qualified Data.Text as Text (unpack)
-import           Control.Monad
-import           Control.Monad.Trans.Except
-import           Control.Monad.IO.Class
-import           Control.Concurrent (threadDelay)
-import           Control.Tracer (nullTracer)
+import           Prelude
 
-import           Ouroboros.Network.Protocol.LocalTxSubmission.Type (SubmitResult (..))
 import           Cardano.Api
-import           Cardano.Api.Shelley (ProtocolParameters, protocolParamMaxTxExUnits, protocolParamPrices)
+import           Cardano.Api.Shelley (PlutusScriptOrReferenceInput (..), ProtocolParameters,
+                   protocolParamMaxTxExUnits, protocolParamPrices)
+import           Ouroboros.Network.Protocol.LocalTxSubmission.Type (SubmitResult (..))
 
+import           Cardano.Benchmarking.FundSet (FundInEra (..), Validity (..), Variant (..),
+                   liftAnyEra)
 import qualified Cardano.Benchmarking.FundSet as FundSet
-import           Cardano.Benchmarking.FundSet (FundInEra(..), Validity(..), Variant(..), liftAnyEra )
-import qualified Cardano.Benchmarking.GeneratorTx as GeneratorTx
-                   ( waitBenchmark, walletBenchmark , readSigningKey, secureGenesisFund)
-import           Cardano.Benchmarking.GeneratorTx as GeneratorTx
-                   (AsyncBenchmarkControl, TxGenError)
+import           Cardano.Benchmarking.GeneratorTx as GeneratorTx (AsyncBenchmarkControl, TxGenError)
+import qualified Cardano.Benchmarking.GeneratorTx as GeneratorTx (readSigningKey, secureGenesisFund,
+                   waitBenchmark, walletBenchmark)
 
-import           Cardano.Benchmarking.GeneratorTx.LocalProtocolDefinition as Core (startProtocol)
-import           Cardano.Benchmarking.GeneratorTx.NodeToNode (ConnectClient, benchmarkConnectTxSubmit)
+import           Cardano.Benchmarking.GeneratorTx.NodeToNode (ConnectClient,
+                   benchmarkConnectTxSubmit)
 import           Cardano.Benchmarking.GeneratorTx.SizedMetadata (mkMetadata)
 import           Cardano.Benchmarking.GeneratorTx.Tx as Core (keyAddress, mkFee, txInModeCardano)
 
-import           Cardano.Benchmarking.OuroborosImports as Core
-                   (LocalSubmitTx, SigningKeyFile
-                   , getGenesis, protocolToNetworkId, protocolToCodecConfig, makeLocalConnectInfo)
-import           Cardano.Benchmarking.PlutusExample as PlutusExample
-import           Cardano.Benchmarking.Tracer as Core
-                   ( createLoggingLayerTracers, btTxSubmit_, btN2N_, btConnect_, btSubmission2_)
-import           Cardano.Benchmarking.Types as Core
-                   (NumberOfInputsPerTx(..), NumberOfOutputsPerTx(..),NumberOfTxs(..), SubmissionErrorPolicy(..)
-                   , TPSRate, TxAdditionalSize(..))
-import           Cardano.Benchmarking.Wallet as Wallet hiding (keyAddress)
 import           Cardano.Benchmarking.FundSet as FundSet (getFundTxIn)
 import           Cardano.Benchmarking.ListBufferedSelector
+import           Cardano.Benchmarking.OuroborosImports as Core (LocalSubmitTx, SigningKeyFile,
+                   makeLocalConnectInfo, protocolToCodecConfig)
+import           Cardano.Benchmarking.PlutusExample as PlutusExample
+
+import           Cardano.Benchmarking.LogTypes as Core (TraceBenchTxSubmit (..), btConnect_, btN2N_,
+                   btSubmission2_, btTxSubmit_)
+import           Cardano.Benchmarking.Types as Core (NumberOfTxs (..), SubmissionErrorPolicy (..),
+                   TPSRate, TxAdditionalSize (..))
+import           Cardano.Benchmarking.Wallet as Wallet hiding (keyAddress)
 
 import           Cardano.Benchmarking.Script.Aeson (readProtocolParametersFile)
 import           Cardano.Benchmarking.Script.Env
 import           Cardano.Benchmarking.Script.Setters
 import           Cardano.Benchmarking.Script.Store as Store
 import           Cardano.Benchmarking.Script.Types
+import           Cardano.Benchmarking.Version as Version
 
 liftCoreWithEra :: AnyCardanoEra -> (forall era. IsShelleyBasedEra era => AsType era -> ExceptT TxGenError IO x) -> ActionM (Either TxGenError x)
 liftCoreWithEra era coreCall = withEra era ( liftIO . runExceptT . coreCall)
@@ -79,17 +81,6 @@ setProtocolParameters s = case s of
   UseLocalProtocolFile file -> do
     protocolParameters <- liftIO $ readProtocolParametersFile file
     set ProtocolParameterMode $ ProtocolParameterLocal protocolParameters
-
-startProtocol :: FilePath -> ActionM ()
-startProtocol filePath = do
-  liftIO (runExceptT $ Core.startProtocol filePath) >>= \case
-    Left err -> throwE $ CliError err
-    Right (loggingLayer, protocol) -> do
-      set LoggingLayer loggingLayer
-      set Protocol protocol
-      set BenchTracers $ Core.createLoggingLayerTracers loggingLayer
-      set Genesis $ Core.getGenesis protocol
-      set (User TNetworkId) $ protocolToNetworkId protocol
 
 readSigningKey :: KeyName -> SigningKeyFile -> ActionM ()
 readSigningKey name filePath =
@@ -114,7 +105,7 @@ addFund era wallet txIn lovelace keyName = do
   fundKey  <- getName keyName
   let
     mkOutValue :: forall era. IsShelleyBasedEra era => AsType era -> ActionM (InAnyCardanoEra TxOutValue)
-    mkOutValue = \_ -> return $ InAnyCardanoEra (cardanoEra @ era) (mkTxOutValueAdaOnly lovelace)
+    mkOutValue = \_ -> return $ InAnyCardanoEra (cardanoEra @ era) (lovelaceToTxOutValue lovelace)
   outValue <- withEra era mkOutValue
   addFundToWallet wallet txIn outValue fundKey
 
@@ -181,12 +172,22 @@ queryRemoteProtocolParameters :: ActionM ProtocolParameters
 queryRemoteProtocolParameters = do
   localNodeConnectInfo <- getLocalConnectInfo
   chainTip  <- liftIO $ getLocalChainTip localNodeConnectInfo
-  ret <- liftIO $ queryNodeLocalState localNodeConnectInfo (Just $ chainTipToChainPoint chainTip)
-                    $ QueryInEra AlonzoEraInCardanoMode $ QueryInShelleyBasedEra ShelleyBasedEraAlonzo QueryProtocolParameters
-  case ret of
-    Right (Right pp) -> return pp
-    Right (Left err) -> throwE $ ApiError $ show err
-    Left err -> throwE $ ApiError $ show err
+  era <- queryEra
+  let
+    callQuery :: forall a. Show a => QueryInMode CardanoMode (Either a ProtocolParameters) -> ActionM ProtocolParameters
+    callQuery query = do
+      res <- liftIO $ queryNodeLocalState localNodeConnectInfo (Just $ chainTipToChainPoint chainTip) query
+      case res of
+        Right (Right pp) -> return pp
+        Right (Left err) -> throwE $ ApiError $ show err
+        Left err -> throwE $ ApiError $ show err
+  case era of
+    AnyCardanoEra ByronEra   -> throwE $ ApiError "queryRemoteProtocolParameters Byron not supported"
+    AnyCardanoEra ShelleyEra -> callQuery $ QueryInEra ShelleyEraInCardanoMode $ QueryInShelleyBasedEra ShelleyBasedEraShelley QueryProtocolParameters
+    AnyCardanoEra AllegraEra -> callQuery $ QueryInEra AllegraEraInCardanoMode $ QueryInShelleyBasedEra ShelleyBasedEraAllegra QueryProtocolParameters
+    AnyCardanoEra MaryEra    -> callQuery $ QueryInEra    MaryEraInCardanoMode $ QueryInShelleyBasedEra ShelleyBasedEraMary    QueryProtocolParameters
+    AnyCardanoEra AlonzoEra  -> callQuery $ QueryInEra  AlonzoEraInCardanoMode $ QueryInShelleyBasedEra ShelleyBasedEraAlonzo QueryProtocolParameters
+    AnyCardanoEra BabbageEra -> callQuery $ QueryInEra BabbageEraInCardanoMode $ QueryInShelleyBasedEra ShelleyBasedEraBabbage QueryProtocolParameters
 
 getProtocolParameters :: ActionM ProtocolParameters
 getProtocolParameters = do
@@ -239,58 +240,45 @@ makeMetadata = do
     Right m -> return m
     Left err -> throwE $ MetadataError err
 
-runBenchmark :: AnyCardanoEra -> WalletName -> SubmitMode -> SpendMode -> ThreadName -> NumberOfTxs -> TPSRate -> ActionM ()
-runBenchmark era sourceWallet submitMode spendMode threadName txCount tps
+runBenchmark :: AnyCardanoEra -> WalletName -> SubmitMode -> SpendMode -> ThreadName -> RunBenchmarkAux -> TPSRate -> ActionM ()
+runBenchmark era sourceWallet submitMode spendMode threadName extraArgs tps
   = case spendMode of
-      SpendOutput -> withEra era $ runBenchmarkInEra sourceWallet submitMode threadName txCount tps
+      SpendOutput -> withEra era $ runBenchmarkInEra sourceWallet submitMode threadName extraArgs tps
       SpendScript scriptFile scriptBudget scriptData scriptRedeemer
-        -> runPlutusBenchmark sourceWallet submitMode scriptFile scriptBudget scriptData scriptRedeemer threadName txCount tps
-      SpendAutoScript scriptFile -> spendAutoScript sourceWallet submitMode scriptFile threadName txCount tps
+        -> withEra era $ runPlutusBenchmark sourceWallet submitMode scriptFile scriptBudget scriptData scriptRedeemer threadName extraArgs tps
+      SpendAutoScript scriptFile -> withEra era $ spendAutoScript sourceWallet submitMode scriptFile threadName extraArgs tps
 
 runBenchmarkInEra :: forall era. IsShelleyBasedEra era
   => WalletName
   -> SubmitMode
   -> ThreadName
-  -> NumberOfTxs
+  -> RunBenchmarkAux
   -> TPSRate
   -> AsType era
   -> ActionM ()
-runBenchmarkInEra sourceWallet submitMode (ThreadName threadName) txCount tps era = do
+runBenchmarkInEra sourceWallet submitMode (ThreadName threadName) shape tps era = do
   tracers  <- get BenchTracers
   networkId <- getUser TNetworkId
   fundKey <- getName $ KeyName "pass-partout" -- should be walletkey
-  (NumberOfInputsPerTx   numInputs) <- getUser TNumberOfInputsPerTx
-  (NumberOfOutputsPerTx numOutputs) <- getUser TNumberOfOutputsPerTx
-  fee <- getUser TFee
-  minValuePerUTxO <- getUser TMinValuePerUTxO
   protocolParameters <- getProtocolParameters
   walletRefSrc <- getName sourceWallet
-  let walletRefDst = walletRefSrc 
+  let walletRefDst = walletRefSrc
   metadata <- makeMetadata
-  let
-    (Quantity minValue) = lovelaceToQuantity $ fromIntegral numOutputs * minValuePerUTxO + fee
-
-  -- this is not totally correct:
-  -- beware of rounding errors !
-    minValuePerInput = quantityToLovelace $ fromIntegral (if m==0 then d else d+1)
-      where
-        (d, m) = minValue `divMod` fromIntegral numInputs
-
---    fundSource :: FundSet.Target -> FundSet.FundSource
---    fundSource target = mkWalletFundSource walletRef $ FundSet.selectInputs ConfirmedBeforeReuse numInputs minTxValue PlainOldFund target
 
   fundSource <- liftIO (mkBufferedSource walletRefSrc
-                   (fromIntegral (unNumberOfTxs txCount) * numInputs)
-                   minValuePerInput
-                   PlainOldFund numInputs) >>= \case
+                   (auxInputs shape)
+                   (auxMinValuePerUTxO shape)
+                   PlainOldFund
+                   (auxInputsPerTx shape)
+                   ) >>= \case
     Right a  -> return a
     Left err -> throwE $ WalletError err
 
   let
     inToOut :: [Lovelace] -> [Lovelace]
-    inToOut = FundSet.inputsToOutputsWithFee fee numOutputs
+    inToOut = FundSet.inputsToOutputsWithFee (auxFee shape) (auxOutputsPerTx shape)
 
-    txGenerator = genTx protocolParameters (TxInsCollateralNone, []) (mkFee fee) metadata (KeyWitness KeyWitnessForSpending)
+    txGenerator = genTx protocolParameters (TxInsCollateralNone, []) (mkFee (auxFee shape)) metadata (KeyWitness KeyWitnessForSpending)
 
     toUTxO :: FundSet.Target -> FundSet.SeqNumber -> ToUTxO era
     toUTxO target seqNumber = Wallet.mkUTxO networkId fundKey (InFlight target seqNumber)
@@ -298,7 +286,7 @@ runBenchmarkInEra sourceWallet submitMode (ThreadName threadName) txCount tps er
     fundToStore = mkWalletFundStore walletRefDst
 
     walletScript :: FundSet.Target -> WalletScript era
-    walletScript = benchmarkWalletScript walletRefSrc txGenerator txCount (const fundSource) inToOut toUTxO fundToStore
+    walletScript = benchmarkWalletScript walletRefSrc txGenerator (NumberOfTxs $ auxTxCount shape) (const fundSource) inToOut toUTxO fundToStore
 
   case submitMode of
     NodeToNode targetNodes -> do
@@ -306,30 +294,28 @@ runBenchmarkInEra sourceWallet submitMode (ThreadName threadName) txCount tps er
       let
         coreCall :: AsType era -> ExceptT TxGenError IO AsyncBenchmarkControl
         coreCall eraProxy = GeneratorTx.walletBenchmark (btTxSubmit_ tracers) (btN2N_ tracers) connectClient
-                                               threadName targetNodes tps LogErrors eraProxy txCount walletScript        
+                                               threadName targetNodes tps LogErrors eraProxy (NumberOfTxs $ auxTxCount shape) walletScript
       ret <- liftIO $ runExceptT $ coreCall era
       case ret of
         Left err -> liftTxGenError err
         Right ctl -> setName (ThreadName threadName) ctl
     _otherwise -> runWalletScriptInMode submitMode $ walletScript $ FundSet.Target "alternate-submit-mode"
 
-runPlutusBenchmark ::
-     WalletName
+runPlutusBenchmark :: forall era. IsShelleyBasedEra era
+  => WalletName
   -> SubmitMode
   -> FilePath
   -> ScriptBudget
   -> ScriptData
   -> ScriptRedeemer
   -> ThreadName
-  -> NumberOfTxs
+  -> RunBenchmarkAux
   -> TPSRate
+  -> AsType era
   -> ActionM ()
-runPlutusBenchmark sourceWallet submitMode scriptFile scriptBudget scriptData scriptRedeemer (ThreadName threadName) txCount tps = do
+runPlutusBenchmark sourceWallet submitMode scriptFile scriptBudget scriptData scriptRedeemer (ThreadName threadName) extraArgs tps era = do
   tracers  <- get BenchTracers
-  (NumberOfInputsPerTx   numInputs) <- getUser TNumberOfInputsPerTx
-  (NumberOfOutputsPerTx numOutputs) <- getUser TNumberOfOutputsPerTx
   networkId <- getUser TNetworkId
-  minValuePerUTxO <- getUser TMinValuePerUTxO
   protocolParameters <- getProtocolParameters
   executionUnitPrices <- case protocolParamPrices protocolParameters of
     Just x -> return x
@@ -347,7 +333,6 @@ runPlutusBenchmark sourceWallet submitMode scriptFile scriptBudget scriptData sc
     Right c -> return c
     Left err -> throwE $ WalletError err
   baseFee <- getUser TFee
-  _minValuePerUTxO <- getUser TMinValuePerUTxO -- TODO:Fix
   metadata <- makeMetadata
 
   let costsPreRun = preExecuteScript protocolParameters script scriptData scriptRedeemer
@@ -381,55 +366,58 @@ runPlutusBenchmark sourceWallet submitMode scriptFile scriptBudget scriptData sc
          p = executionUnitPrices
          times w c = fromIntegral w % 1 * c
 
-    totalFee = baseFee +  fromIntegral numInputs * scriptFee
-    (Quantity minValue) = lovelaceToQuantity $ fromIntegral numOutputs * minValuePerUTxO + totalFee
+    totalFee = baseFee +  fromIntegral (auxInputsPerTx extraArgs) * scriptFee
+    (Quantity minValue) = lovelaceToQuantity $ fromIntegral (auxOutputsPerTx extraArgs) * auxMinValuePerUTxO extraArgs + totalFee
   -- this is not totally correct:
   -- beware of rounding errors !
     minValuePerInput = quantityToLovelace $ fromIntegral (if m==0 then d else d+1)
       where
-        (d, m) = minValue `divMod` fromIntegral numInputs
-
---    fundSource :: FundSet.Target -> FundSet.FundSource
---    fundSource target = mkWalletFundSource walletRef $ FundSet.selectInputs ConfirmedBeforeReuse numInputs minTxValue PlainOldFund target
+        (d, m) = minValue `divMod` fromIntegral (auxInputsPerTx extraArgs)
 
   fundSource <- liftIO (mkBufferedSource walletRefSrc
-                   (fromIntegral (unNumberOfTxs txCount) * numInputs)
+                   (auxInputs extraArgs)
                    minValuePerInput
-                   (PlutusScriptFund scriptFile scriptData) numInputs) >>= \case
+                   (PlutusScriptFund scriptFile scriptData)
+                   (auxInputsPerTx extraArgs)) >>= \case
     Right a  -> return a
     Left err -> throwE $ WalletError err
 
   let
     inToOut :: [Lovelace] -> [Lovelace]
-    inToOut = FundSet.inputsToOutputsWithFee totalFee numOutputs
+    inToOut = FundSet.inputsToOutputsWithFee totalFee (auxOutputsPerTx extraArgs)
 --    inToOut = FundSet.inputsToOutputsWithFee totalFee 1
 
     PlutusScript PlutusScriptV1 script' = script
-    scriptWitness :: ScriptWitness WitCtxTxIn AlonzoEra
-    scriptWitness = PlutusScriptWitness
-                          PlutusScriptV1InAlonzo
+    scriptWitness :: ScriptWitness WitCtxTxIn era
+    scriptWitness = case scriptLanguageSupportedInEra (cardanoEra @ era) (PlutusScriptLanguage PlutusScriptV1) of
+      Nothing -> error $ "runPlutusBenchmark: Plutus V1 scriptlanguage not supported : in era" ++ show (cardanoEra @ era)
+      Just scriptLang -> PlutusScriptWitness
+                          scriptLang
                           PlutusScriptV1
-                          script'
+                          (PScript script')
                           (ScriptDatumForTxIn scriptData)
                           scriptRedeemer
                           executionUnits
 
-    collateral = (TxInsCollateral CollateralInAlonzoEra $  map getFundTxIn collateralFunds, collateralFunds)
+    collateral = case collateralSupportedInEra (cardanoEra @ era) of
+      Nothing -> error $ "runPlutusBenchmark: collateral: era not supported :" ++ show (cardanoEra @ era)
+      Just p -> (TxInsCollateral p $  map getFundTxIn collateralFunds, collateralFunds)
+
     txGenerator = genTx protocolParameters collateral (mkFee totalFee) metadata (ScriptWitness ScriptWitnessForSpending scriptWitness)
 
     fundToStore = mkWalletFundStore walletRefDst
 
-    toUTxO :: FundSet.Target -> FundSet.SeqNumber -> ToUTxO AlonzoEra
+    toUTxO :: FundSet.Target -> FundSet.SeqNumber -> ToUTxO era
     toUTxO target seqNumber = Wallet.mkUTxO networkId fundKey (InFlight target seqNumber)
 
-    walletScript :: FundSet.Target -> WalletScript AlonzoEra
-    walletScript = benchmarkWalletScript walletRefSrc txGenerator txCount (const fundSource) inToOut toUTxO fundToStore
+    walletScript :: FundSet.Target -> WalletScript era
+    walletScript = benchmarkWalletScript walletRefSrc txGenerator (NumberOfTxs $ auxTxCount extraArgs) (const fundSource) inToOut toUTxO fundToStore
 
   case submitMode of
     NodeToNode targetNodes -> do
       connectClient <- getConnectClient
       ret <- liftIO $ runExceptT $ GeneratorTx.walletBenchmark (btTxSubmit_ tracers) (btN2N_ tracers) connectClient
-                               threadName targetNodes tps LogErrors AsAlonzoEra txCount walletScript
+                               threadName targetNodes tps LogErrors era (NumberOfTxs $ auxTxCount extraArgs) walletScript
       case ret of
         Left err -> liftTxGenError err
         Right ctl -> setName (ThreadName threadName) ctl
@@ -468,10 +456,10 @@ importGenesisFund era wallet submitMode genesisKeyName destKey = do
       f <- GeneratorTx.secureGenesisFund tracer localSubmit networkId genesis fee ttl genesisKey addr
       return (f, fundKey)
   result <- liftCoreWithEra era coreCall
-  case result of 
+  case result of
     Left err -> liftTxGenError err
     Right ((txIn, outVal), skey) -> addFundToWallet wallet txIn outVal skey
-  
+
 initWallet :: WalletName -> ActionM ()
 initWallet name = liftIO Wallet.initWallet >>= setName name
 
@@ -489,7 +477,7 @@ createChangeScriptFunds sourceWallet dstWallet submitMode scriptFile scriptData 
   networkId <- getUser TNetworkId
   protocolParameters <- getProtocolParameters
   _fundKey <- getName $ KeyName "pass-partout"
-  fee <- getUser TFee  
+  fee <- getUser TFee
   script <- liftIO $ PlutusExample.readScript scriptFile --TODO: this should throw a file-not-found-error !
   let
     createCoins fundSource coins = do
@@ -593,16 +581,25 @@ It is intended to be used with the the loop script from cardano-node/plutus-exam
 loopScriptFile is the FilePath to the Plutus script that implements the delay loop. (for example in /nix/store/).
 spendAutoScript relies on a particular calling convention of the loop script.
 -}
-spendAutoScript :: WalletName -> SubmitMode -> FilePath -> ThreadName -> NumberOfTxs -> TPSRate -> ActionM ()
-spendAutoScript sourceWallet submitMode loopScriptFile threadName txCount tps = do
+spendAutoScript :: forall era. IsShelleyBasedEra era
+  => WalletName
+  -> SubmitMode
+  -> FilePath
+  -> ThreadName
+  -> RunBenchmarkAux
+  -> TPSRate
+  -> AsType era
+  -> ActionM ()
+spendAutoScript sourceWallet submitMode loopScriptFile threadName extraArgs tps era = do
   protocolParameters <- getProtocolParameters
   perTxBudget <- case protocolParamMaxTxExUnits protocolParameters of
     Nothing -> throwE $ ApiError "Cannot determine protocolParamMaxTxExUnits"
     Just b -> return b
   traceDebug $ "Plutus auto mode : Available budget per TX: " ++ show perTxBudget
 
-  numInputs <- fromIntegral <$> getUser TNumberOfInputsPerTx
-  let budget = ExecutionUnits
+  let
+    numInputs = fromIntegral $ auxInputsPerTx extraArgs
+    budget = ExecutionUnits
                  (executionSteps perTxBudget `div` numInputs)
                  (executionMemory perTxBudget `div` numInputs)
   traceDebug $ "Plutus auto mode : Available budget per script run: " ++ show budget
@@ -617,7 +614,7 @@ spendAutoScript sourceWallet submitMode loopScriptFile threadName txCount tps = 
   redeemer <- case startSearch isInLimits 0 searchUpperBound of
     Left err -> throwE $ ApiError $ "cannot find fitting redeemer :" ++ err
     Right n -> return $ toLoopArgument n
-  runPlutusBenchmark sourceWallet submitMode loopScriptFile PreExecuteScript (ScriptDataNumber 0) redeemer threadName txCount tps
+  runPlutusBenchmark sourceWallet submitMode loopScriptFile PreExecuteScript (ScriptDataNumber 0) redeemer threadName extraArgs tps era
   where
     -- This is the hardcoded calling convention of the loop.plutus script.
     -- To loop n times one has to pass n + 1_000_000 as redeemer.
@@ -633,6 +630,9 @@ spendAutoScript sourceWallet submitMode loopScriptFile threadName txCount tps = 
              let m = (a + b) `div` 2
              test <- f m
              if test then search f m b else search f a m
+
+traceTxGeneratorVersion :: ActionM ()
+traceTxGeneratorVersion = traceBenchTxSubmit TraceTxGeneratorVersion Version.txGeneratorVersion
 
 {-
 This is for dirty hacking and testing and quick-fixes.

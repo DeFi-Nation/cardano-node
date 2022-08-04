@@ -10,35 +10,69 @@ import           Control.Concurrent.Async.Extra (sequenceConcurrently)
 import           Control.Concurrent.Extra (newLock)
 import           Control.Monad (void)
 
-import           Cardano.Tracer.Acceptors.Run (runAcceptors)
-import           Cardano.Tracer.CLI (TracerParams (..))
-import           Cardano.Tracer.Configuration (TracerConfig, readTracerConfig)
-import           Cardano.Tracer.Handlers.Logs.Rotator (runLogsRotator)
-import           Cardano.Tracer.Handlers.Metrics.Servers (runMetricsServers)
-import           Cardano.Tracer.Types (DataPointRequestors, ProtocolsBrake)
-import           Cardano.Tracer.Utils (initAcceptedMetrics, initConnectedNodes,
-                   initDataPointRequestors, initProtocolsBrake, lift3M)
+import           Cardano.Tracer.Acceptors.Run
+import           Cardano.Tracer.CLI
+import           Cardano.Tracer.Configuration
+import           Cardano.Tracer.Environment
+import           Cardano.Tracer.Handlers.Logs.Rotator
+import           Cardano.Tracer.Handlers.Metrics.Servers
+import           Cardano.Tracer.Handlers.RTView.Run
+import           Cardano.Tracer.Handlers.RTView.State.Historical
+import           Cardano.Tracer.Handlers.RTView.Update.Historical
+import           Cardano.Tracer.Types
+import           Cardano.Tracer.Utils
 
 -- | Top-level run function, called by 'cardano-tracer' app.
 runCardanoTracer :: TracerParams -> IO ()
-runCardanoTracer TracerParams{tracerConfig} = lift3M
-  doRunCardanoTracer (readTracerConfig tracerConfig)
-                     initProtocolsBrake
-                     initDataPointRequestors
+runCardanoTracer TracerParams{tracerConfig} = do
+  config <- readTracerConfig tracerConfig
+  brake <- initProtocolsBrake
+  dpRequestors <- initDataPointRequestors
+  doRunCardanoTracer config brake dpRequestors
 
 -- | Runs all internal services of the tracer.
 doRunCardanoTracer
-  :: TracerConfig    -- ^ Tracer's configuration.
-  -> ProtocolsBrake  -- ^ The flag we use to stop all the protocols.
+  :: TracerConfig        -- ^ Tracer's configuration.
+  -> ProtocolsBrake      -- ^ The flag we use to stop all the protocols.
   -> DataPointRequestors -- ^ The DataPointRequestors to ask 'DataPoint's.
   -> IO ()
 doRunCardanoTracer config protocolsBrake dpRequestors = do
-  connectedNodes <- initConnectedNodes
+  connectedNodes  <- initConnectedNodes
   acceptedMetrics <- initAcceptedMetrics
+  savedTO         <- initSavedTraceObjects
+
+  chainHistory     <- initBlockchainHistory
+  resourcesHistory <- initResourcesHistory
+  txHistory        <- initTransactionsHistory
+
   currentLogLock <- newLock
+  currentDPLock  <- newLock
+  eventsQueues   <- initEventsQueues dpRequestors currentDPLock
+
+  -- Environment for all following functions.
+  let tracerEnv =
+        TracerEnv
+          { teConfig            = config
+          , teConnectedNodes    = connectedNodes
+          , teAcceptedMetrics   = acceptedMetrics
+          , teSavedTO           = savedTO
+          , teBlockchainHistory = chainHistory
+          , teResourcesHistory  = resourcesHistory
+          , teTxHistory         = txHistory
+          , teCurrentLogLock    = currentLogLock
+          , teCurrentDPLock     = currentDPLock
+          , teEventsQueues      = eventsQueues
+          , teDPRequestors      = dpRequestors
+          , teProtocolsBrake    = protocolsBrake
+          }
+
+  -- Specify what should be done before 'cardano-tracer' stops.
+  beforeProgramStops $
+    backupAllHistory tracerEnv
+
   void . sequenceConcurrently $
-    [ runLogsRotator    config currentLogLock
-    , runMetricsServers config connectedNodes acceptedMetrics
-    , runAcceptors      config connectedNodes acceptedMetrics
-                        dpRequestors protocolsBrake currentLogLock
+    [ runLogsRotator    tracerEnv
+    , runMetricsServers tracerEnv
+    , runAcceptors      tracerEnv
+    , runRTView         tracerEnv
     ]

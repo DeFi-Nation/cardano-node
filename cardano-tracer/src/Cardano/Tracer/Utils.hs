@@ -1,12 +1,18 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PackageImports #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
+#if !defined(mingw32_HOST_OS)
+#define UNIX
+#endif
+
 module Cardano.Tracer.Utils
   ( applyBrake
+  , beforeProgramStops
   , connIdToNodeId
   , initAcceptedMetrics
   , initConnectedNodes
@@ -14,21 +20,29 @@ module Cardano.Tracer.Utils
   , initProtocolsBrake
   , lift2M
   , lift3M
+  , nl
   , runInLoop
   , showProblemIfAny
+  , showT
   ) where
 
 import           Control.Applicative (liftA2, liftA3)
+import           Control.Concurrent
 import           Control.Concurrent.STM (atomically)
 import           Control.Concurrent.STM.TVar (modifyTVar', newTVarIO)
-import           Control.Exception (SomeException, SomeAsyncException (..),
+import           Control.Exception (SomeException, SomeAsyncException (..), finally,
                    fromException, try, tryJust)
+import           Control.Monad (forM_)
+import           Control.Monad.Extra (whenJustM)
 import           "contra-tracer" Control.Tracer (showTracing, stdoutTracer, traceWith)
 import           Data.List.Extra (dropPrefix, dropSuffix, replace)
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import qualified Data.Text as T
 import           Data.Tuple.Extra (uncurry3)
+import           System.IO (hFlush, stdout)
+import           System.Mem.Weak (deRefWeak)
+import qualified System.Signal as S
 import           System.Time.Extra (sleep)
 
 import           Ouroboros.Network.Socket (ConnectionId (..))
@@ -123,3 +137,31 @@ lift2M f x y = liftA2 (,) x y >>= uncurry f
 -- | Like 'liftM3', but for monadic function.
 lift3M :: Monad m => (a -> b -> c -> m d) -> m a -> m b -> m c -> m d
 lift3M f x y z = liftA3 (,,) x y z >>= uncurry3 f
+
+nl :: T.Text
+#ifdef UNIX
+nl = "\n"
+#else
+nl = "\r\n"
+#endif
+
+showT :: Show a => a -> T.Text
+showT = T.pack . show
+
+-- | If 'cardano-tracer' process is going to die (by receiving some system signal),
+--   we want to do something before it stops.
+beforeProgramStops :: IO () -> IO ()
+beforeProgramStops action = do
+  mainThreadIdWk <- mkWeakThreadId =<< myThreadId
+  forM_ signals $ \sig ->
+    S.installHandler sig . const $ do
+      putStrLn " Program is stopping, please wait..."
+      hFlush stdout
+      action
+        `finally` whenJustM (deRefWeak mainThreadIdWk) killThread
+ where
+  signals =
+    [ S.sigABRT
+    , S.sigINT
+    , S.sigTERM
+    ]

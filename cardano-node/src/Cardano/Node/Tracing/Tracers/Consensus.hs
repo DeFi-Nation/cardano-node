@@ -17,7 +17,8 @@ module Cardano.Node.Tracing.Tracers.Consensus
 
   , severityChainSyncServerEvent
   , namesForChainSyncServerEvent
-  , docChainSyncServerEvent
+  , docChainSyncServerEventHeader
+  , docChainSyncServerEventBlock
 
   , severityBlockFetchDecision
   , namesForBlockFetchDecision
@@ -26,6 +27,10 @@ module Cardano.Node.Tracing.Tracers.Consensus
   , severityBlockFetchClient
   , namesForBlockFetchClient
   , docBlockFetchClient
+
+  , ClientMetrics(..)
+  , initialClientMetrics
+  , calculateBlockFetchClientMetrics
 
   , severityBlockFetchServer
   , namesForBlockFetchServer
@@ -67,10 +72,15 @@ module Cardano.Node.Tracing.Tracers.Consensus
 
 import           Control.Monad.Class.MonadTime (Time (..))
 import           Data.Aeson (ToJSON, Value (Number, String), toJSON, (.=))
+import           Data.IntPSQ (IntPSQ)
+import qualified Data.IntPSQ as Pq
 import           Data.SOP.Strict
 import qualified Data.Text as Text
-import           Data.Time (DiffTime)
+import           Data.Time (DiffTime, NominalDiffTime)
 import           Text.Show
+
+
+import           Cardano.Slotting.Slot (WithOrigin (..))
 
 import           Cardano.Logging
 import           Cardano.Node.Queries (HasKESInfo (..))
@@ -83,6 +93,8 @@ import           Cardano.Prelude hiding (All, Show, show)
 
 import           Cardano.Protocol.TPraos.OCert (KESPeriod (..))
 
+import qualified Ouroboros.Network.AnchoredFragment as AF
+import qualified Ouroboros.Network.AnchoredSeq as AS
 import           Ouroboros.Network.Block hiding (blockPrevHash)
 import           Ouroboros.Network.BlockFetch.ClientState (TraceLabelPeer (..))
 import qualified Ouroboros.Network.BlockFetch.ClientState as BlockFetch
@@ -111,7 +123,7 @@ import           Ouroboros.Consensus.MiniProtocol.LocalTxSubmission.Server
 import           Ouroboros.Consensus.Node.Run (SerialiseNodeToNodeConstraints, estimateBlockSize)
 import           Ouroboros.Consensus.Node.Tracers
 import qualified Ouroboros.Consensus.Protocol.Ledger.HotKey as HotKey
-
+import           Ouroboros.Consensus.Util.Enclose
 
 
 
@@ -155,8 +167,7 @@ severityChainSyncClientEvent (BlockFetch.TraceLabelPeer _ e) =
 
 namesForChainSyncClientEvent ::
   BlockFetch.TraceLabelPeer peer (TraceChainSyncClientEvent blk) -> [Text]
-namesForChainSyncClientEvent (BlockFetch.TraceLabelPeer _ e) =
-    "ChainSyncClientEvent" : namesForChainSyncClientEvent' e
+namesForChainSyncClientEvent (BlockFetch.TraceLabelPeer _ e) = namesForChainSyncClientEvent' e
 
 severityChainSyncClientEvent' :: TraceChainSyncClientEvent blk -> SeverityS
 severityChainSyncClientEvent' TraceDownloadedHeader {}  = Info
@@ -210,16 +221,10 @@ instance (ConvertRawHash blk, LedgerSupportsProtocol blk)
       mconcat [ "kind" .= String "Termination"
                , "reason" .= String (Text.pack $ show reason) ]
 
+
 docChainSyncClientEvent ::
   Documented (BlockFetch.TraceLabelPeer peer (TraceChainSyncClientEvent blk))
-docChainSyncClientEvent =
-    addDocumentedNamespace
-      ["ChainSyncClientEvent"]
-      docChainSyncClientEvent'
-
-docChainSyncClientEvent' ::
-  Documented (BlockFetch.TraceLabelPeer peer (TraceChainSyncClientEvent blk))
-docChainSyncClientEvent' = Documented [
+docChainSyncClientEvent = Documented [
     DocMsg
       ["DownloadedHeader"]
       []
@@ -249,85 +254,55 @@ docChainSyncClientEvent' = Documented [
 --------------------------------------------------------------------------------
 
 severityChainSyncServerEvent :: TraceChainSyncServerEvent blk -> SeverityS
-severityChainSyncServerEvent TraceChainSyncServerRead        {} = Info
-severityChainSyncServerEvent TraceChainSyncServerReadBlocked {} = Info
-severityChainSyncServerEvent TraceChainSyncRollForward       {} = Info
-severityChainSyncServerEvent TraceChainSyncRollBackward      {} = Info
+severityChainSyncServerEvent (TraceChainSyncServerUpdate _tip _upd _blocking enclosing) =
+    case enclosing of
+      RisingEdge  -> Info
+      FallingEdge -> Debug
 
 namesForChainSyncServerEvent :: TraceChainSyncServerEvent blk -> [Text]
-namesForChainSyncServerEvent ev =
-    "ChainSyncServerEvent" : namesForChainSyncServerEvent' ev
-
-
-namesForChainSyncServerEvent' :: TraceChainSyncServerEvent blk -> [Text]
-namesForChainSyncServerEvent' TraceChainSyncServerRead        {} =
-      ["ServerRead"]
-namesForChainSyncServerEvent' TraceChainSyncServerReadBlocked {} =
-      ["ServerReadBlocked"]
-namesForChainSyncServerEvent' TraceChainSyncRollForward       {} =
-      ["RollForward"]
-namesForChainSyncServerEvent' TraceChainSyncRollBackward      {} =
-      ["RollBackward"]
+namesForChainSyncServerEvent (TraceChainSyncServerUpdate _tip _update _blocking _enclosing) =
+      ["Update"]
 
 instance ConvertRawHash blk
       => LogFormatting (TraceChainSyncServerEvent blk) where
-  forMachine _dtal (TraceChainSyncServerRead tip (AddBlock _hdr)) =
-      mconcat
-               [ "kind" .= String "ChainSyncServerRead.AddBlock"
-               , tipToObject tip
+  forMachine dtal (TraceChainSyncServerUpdate tip update blocking enclosing) =
+      mconcat $
+               [ "kind" .= String "ChainSyncServer.Update"
+               , "tip" .= tipToObject tip
+               , case update of
+                   AddBlock pt -> "addBlock" .= renderPointForDetails dtal pt
+                   RollBack pt -> "rollBackTo" .= renderPointForDetails dtal pt
+               , "blockingRead" .= case blocking of Blocking -> True; NonBlocking -> False
                ]
-  forMachine _dtal (TraceChainSyncServerRead tip (RollBack _pt)) =
-      mconcat
-               [ "kind" .= String "ChainSyncServerRead.RollBack"
-               , tipToObject tip
-               ]
-  forMachine _dtal (TraceChainSyncServerReadBlocked tip (AddBlock _hdr)) =
-      mconcat
-               [ "kind" .= String "ChainSyncServerReadBlocked.AddBlock"
-               , tipToObject tip
-               ]
-  forMachine _dtal (TraceChainSyncServerReadBlocked tip (RollBack _pt)) =
-      mconcat
-               [ "kind" .= String "ChainSyncServerReadBlocked.RollBack"
-               , tipToObject tip
-               ]
-  forMachine dtal (TraceChainSyncRollForward point) =
-      mconcat [ "kind" .= String "ChainSyncServerRead.RollForward"
-              , "point" .= forMachine dtal point
-              ]
-  forMachine dtal (TraceChainSyncRollBackward point) =
-      mconcat [ "kind" .= String "ChainSyncServerRead.ChainSyncRollBackward"
-              , "point" .= forMachine dtal point
-              ]
+               <> [ "risingEdge" .= True | RisingEdge <- [enclosing] ]
 
-  asMetrics (TraceChainSyncRollForward _point) =
+  asMetrics (TraceChainSyncServerUpdate _tip (AddBlock _pt) _blocking FallingEdge) =
       [CounterM "cardano.node.chainSync.rollForward" Nothing]
   asMetrics _ = []
 
-docChainSyncServerEvent :: Documented (TraceChainSyncServerEvent blk)
-docChainSyncServerEvent =
-    addDocumentedNamespace
-      ["ChainSyncServerEvent", "ServerRead"]
-      docChainSyncServerEvent'
 
-docChainSyncServerEvent' :: Documented (TraceChainSyncServerEvent blk)
-docChainSyncServerEvent' = Documented [
+
+-- | Metrics documented here, but implemented specially
+docChainSyncServerEventHeader :: Documented (TraceChainSyncServerEvent blk)
+docChainSyncServerEventHeader = Documented [
     DocMsg
-      ["ServerRead"]
+      ["Update"]
+      [("ChainSync.HeadersServed", "A counter triggered only on header event")]
+      "A server read has occurred, either for an add block or a rollback"
+  ]
+
+docChainSyncServerEventBlock :: Documented (TraceChainSyncServerEvent blk)
+docChainSyncServerEventBlock =
+    addDocumentedNamespace
+      []
+      docChainSyncServerEventBlock'
+
+docChainSyncServerEventBlock' :: Documented (TraceChainSyncServerEvent blk)
+docChainSyncServerEventBlock' = Documented [
+    DocMsg
+      ["Update"]
       []
       "A server read has occurred, either for an add block or a rollback"
-    , DocMsg
-       ["ServerReadBlocked"]
-      []
-      "A server read has blocked, either for an add block or a rollback"
-    , DocMsg
-      ["RollForward"]
-      [("cardano.node.chainSync.rollForward", "")]
-      "Roll forward to the given point."
-    , DocMsg
-      ["RollBackward"]
-      []
-      ""
   ]
 
 --------------------------------------------------------------------------------
@@ -372,7 +347,7 @@ instance (LogFormatting peer, Show peer) =>
     , "peers" .= toJSON
       (foldl' (\acc x -> forMachine DDetailed x : acc) [] xs) ]
 
-  asMetrics peers = [IntM "cardano.node.connectedPeers" (fromIntegral (length peers))]
+  asMetrics peers = [IntM "BlockFetch.ConnectedPeers" (fromIntegral (length peers))]
 
 instance (LogFormatting peer, Show peer, LogFormatting a)
   => LogFormatting (TraceLabelPeer peer a) where
@@ -397,7 +372,7 @@ docBlockFetchDecision ::
 docBlockFetchDecision = Documented [
     DocMsg
       []
-      [("cardano.node.connectedPeers", "Number of connected peers")]
+      [("BlockFetch.ConnectedPeers", "Number of connected peers")]
       "Throughout the decision making process we accumulate reasons to decline\
       \ to fetch any blocks. This message carries the intermediate and final\
       \ results."
@@ -406,6 +381,132 @@ docBlockFetchDecision = Documented [
 --------------------------------------------------------------------------------
 -- BlockFetchClient Tracer
 --------------------------------------------------------------------------------
+
+data CdfCounter = CdfCounter {
+    limit :: Int64
+  , counter :: Int64
+}
+
+decCdf :: Ord a => Num a => a -> CdfCounter -> CdfCounter
+decCdf v cdf =
+  if v < fromIntegral (limit cdf)
+    then cdf {counter = counter cdf - 1}
+    else cdf
+
+incCdf ::Ord a => Num a => a -> CdfCounter -> CdfCounter
+incCdf v cdf =
+  if v < fromIntegral (limit cdf)
+    then cdf {counter = counter cdf + 1}
+    else cdf
+
+data ClientMetrics = ClientMetrics {
+    cmSlotMap  :: IntPSQ Word64 NominalDiffTime
+  , cmCdf1sVar :: CdfCounter
+  , cmCdf3sVar :: CdfCounter
+  , cmCdf5sVar :: CdfCounter
+  , cmDelay    :: Double
+  , cmBlockSize :: Word32
+  , cmTraceIt  :: Bool
+}
+
+instance LogFormatting ClientMetrics where
+  forMachine _dtal _ = mempty
+  asMetrics ClientMetrics {..} =
+    if cmTraceIt
+      then
+        let  size = Pq.size cmSlotMap
+             msgs =
+               [ DoubleM
+                    "cardano.node.metrics.blockfetchclient.blockdelay.s"
+                    cmDelay
+               , IntM
+                    "cardano.node.metrics.blockfetchclient.blocksize"
+                    (fromIntegral cmBlockSize)
+               , DoubleM "cardano.node.metrics.blockfetchclient.blockdelay.cdfOne"
+                    (fromIntegral (counter cmCdf1sVar) / fromIntegral size)
+               , DoubleM "cardano.node.metrics.blockfetchclient.blockdelay.cdfThree"
+                    (fromIntegral (counter cmCdf3sVar) / fromIntegral size)
+               , DoubleM "cardano.node.metrics.blockfetchclient.blockdelay.cdfFive"
+                    (fromIntegral (counter cmCdf5sVar) / fromIntegral size)
+               ]
+        in if cmDelay > 5
+             then
+               CounterM "cardano.node.metrics.blockfetchclient.lateblocks" Nothing
+                 : msgs
+             else msgs
+      else []
+
+initialClientMetrics :: ClientMetrics
+initialClientMetrics =
+    ClientMetrics
+      Pq.empty
+      (CdfCounter 1 0)
+      (CdfCounter 3 0)
+      (CdfCounter 5 0)
+      0
+      0
+      False
+
+calculateBlockFetchClientMetrics ::
+     ClientMetrics
+  -> LoggingContext
+  -> BlockFetch.TraceLabelPeer peer (BlockFetch.TraceFetchClientState header)
+  -> IO ClientMetrics
+calculateBlockFetchClientMetrics cm@ClientMetrics {..} _lc
+            (TraceLabelPeer _ (BlockFetch.CompletedBlockFetch p _ _ _ forgeDelay blockSize)) =
+    case pointSlot p of
+            Origin -> pure cm {cmTraceIt = False}  -- Nothing to do.
+            At (SlotNo slotNo) -> do
+               if Pq.null cmSlotMap && forgeDelay > 20
+                  then pure cm {cmTraceIt = False} -- During startup wait until we are in sync
+                  else case Pq.lookup (fromIntegral slotNo) cmSlotMap of
+                        Just _ -> pure cm {cmTraceIt = False}  -- dupe, we only track the first
+                        Nothing -> do
+                          let slotMap' = Pq.insert (fromIntegral slotNo) slotNo forgeDelay cmSlotMap
+                          if Pq.size slotMap' > 1080 -- TODO k/2, should come from config file
+                            then case Pq.minView slotMap' of
+                                 Nothing -> pure cm {cmTraceIt = False} -- Err. We just inserted an element!
+                                 Just (_, minSlotNo, minDelay, slotMap'') ->
+                                   if minSlotNo == slotNo
+                                      then pure cm {cmTraceIt = False, cmSlotMap = slotMap'}
+                                      else let
+                                         cdf1sVar = decCdf minDelay cmCdf1sVar
+                                         cdf3sVar = decCdf minDelay cmCdf3sVar
+                                         cdf5sVar = decCdf minDelay cmCdf5sVar
+                                         cdf1sVar' = incCdf forgeDelay cdf1sVar
+                                         cdf3sVar' = incCdf forgeDelay cdf3sVar
+                                         cdf5sVar' = incCdf forgeDelay cdf5sVar
+                                         in pure cm {
+                                              cmCdf1sVar  = cdf1sVar'
+                                            , cmCdf3sVar  = cdf3sVar'
+                                            , cmCdf5sVar  = cdf5sVar'
+                                            , cmDelay     = realToFrac  forgeDelay
+                                            , cmBlockSize = blockSize
+                                            , cmTraceIt   = True
+                                            , cmSlotMap   = slotMap''}
+                            else let
+                               cdf1sVar' = incCdf forgeDelay cmCdf1sVar
+                               cdf3sVar' = incCdf forgeDelay cmCdf3sVar
+                               cdf5sVar' = incCdf forgeDelay cmCdf5sVar
+                                -- -- Wait until we have at least 45 samples before we start providing
+                                -- -- cdf estimates.
+                               in if Pq.size slotMap' >= 45
+                                    then pure cm {
+                                         cmCdf1sVar  = cdf1sVar'
+                                       , cmCdf3sVar  = cdf3sVar'
+                                       , cmCdf5sVar  = cdf5sVar'
+                                       , cmDelay     = realToFrac forgeDelay
+                                       , cmBlockSize = blockSize
+                                       , cmTraceIt   = True
+                                       , cmSlotMap   = slotMap'}
+                                   else pure cm {
+                                        cmCdf1sVar  = cdf1sVar'
+                                      , cmCdf3sVar  = cdf3sVar'
+                                      , cmCdf5sVar  = cdf5sVar'
+                                      , cmTraceIt   = False
+                                      , cmSlotMap   = slotMap'}
+
+calculateBlockFetchClientMetrics cm _lc _ = pure cm
 
 severityBlockFetchClient ::
      BlockFetch.TraceLabelPeer peer (BlockFetch.TraceFetchClientState header)
@@ -450,23 +551,47 @@ namesForBlockFetchClient' BlockFetch.ClientTerminating {} =
   ["ClientTerminating"]
 
 
-instance LogFormatting (BlockFetch.TraceFetchClientState header) where
+instance (HasHeader header, ConvertRawHash header) =>
+  LogFormatting (BlockFetch.TraceFetchClientState header) where
   forMachine _dtal BlockFetch.AddedFetchRequest {} =
     mconcat [ "kind" .= String "AddedFetchRequest" ]
   forMachine _dtal BlockFetch.AcknowledgedFetchRequest {} =
     mconcat [ "kind" .= String "AcknowledgedFetchRequest" ]
-  forMachine _dtal BlockFetch.SendFetchRequest {} =
-    mconcat [ "kind" .= String "SendFetchRequest" ]
-  forMachine _dtal BlockFetch.CompletedBlockFetch {} =
-    mconcat [ "kind" .= String "CompletedBlockFetch" ]
+  forMachine _dtal (BlockFetch.SendFetchRequest af) =
+    mconcat [ "kind" .= String "SendFetchRequest"
+            , "head" .= String (renderChainHash
+                                 (renderHeaderHash (Proxy @header))
+                                 (AF.headHash af))
+            , "length" .= toJSON (fragmentLength af)]
+   where
+     -- NOTE: this ignores the Byron era with its EBB complication:
+     -- the length would be underestimated by 1, if the AF is anchored
+     -- at the epoch boundary.
+     fragmentLength :: AF.AnchoredFragment header -> Int
+     fragmentLength f = fromIntegral . unBlockNo $
+        case (f, f) of
+          (AS.Empty{}, AS.Empty{}) -> 0
+          (firstHdr AS.:< _, _ AS.:> lastHdr) ->
+            blockNo lastHdr - blockNo firstHdr + 1
+  forMachine _dtal (BlockFetch.CompletedBlockFetch pt _ _ _ delay blockSize) =
+    mconcat [ "kind"  .= String "CompletedBlockFetch"
+            , "delay" .= (realToFrac delay :: Double)
+            , "size"  .= blockSize
+            , "block" .= String
+              (case pt of
+                 GenesisPoint -> "Genesis"
+                 BlockPoint _ h -> renderHeaderHash (Proxy @header) h)
+            ]
   forMachine _dtal BlockFetch.CompletedFetchBatch {} =
     mconcat [ "kind" .= String "CompletedFetchBatch" ]
   forMachine _dtal BlockFetch.StartedFetchBatch {} =
     mconcat [ "kind" .= String "StartedFetchBatch" ]
   forMachine _dtal BlockFetch.RejectedFetchBatch {} =
     mconcat [ "kind" .= String "RejectedFetchBatch" ]
-  forMachine _dtal BlockFetch.ClientTerminating {} =
-    mconcat [ "kind" .= String "ClientTerminating" ]
+  forMachine _dtal (BlockFetch.ClientTerminating outstanding) =
+    mconcat [ "kind" .= String "ClientTerminating"
+            , "outstanding" .= outstanding
+            ]
 
 
 docBlockFetchClient ::
@@ -548,7 +673,7 @@ instance ConvertRawHash blk => LogFormatting (TraceBlockFetchServerEvent blk) wh
                                     $ pointHash blk)]
 -- TODO JNF
   asMetrics (TraceBlockFetchServerSendBlock _p) =
-    [CounterM "cardano.node.served.block" Nothing]
+    [CounterM "BlockFetch.BlocksServed" Nothing]
 
 
 docBlockFetchServer ::
@@ -561,7 +686,7 @@ docBlockFetchServer' ::
 docBlockFetchServer' = Documented [
     DocMsg
       ["SendBlock"]
-      [("cardano.node.served.block", "")]
+      [("BlockFetch.BlocksServed", "")]
       "The server sent a block to the peer."
   ]
 
@@ -593,15 +718,15 @@ namesForTxInbound' ::
     TraceTxSubmissionInbound (GenTxId blk) (GenTx blk)
   -> [Text]
 namesForTxInbound' (TraceTxSubmissionCollected _) =
-    ["TxSubmissionCollected"]
+    ["Collected"]
 namesForTxInbound' (TraceTxSubmissionProcessed _) =
-    ["TxSubmissionProcessed"]
+    ["Processed"]
 namesForTxInbound' TraceTxInboundTerminated   =
-    ["TxInboundTerminated"]
+    ["Terminated"]
 namesForTxInbound' TraceTxInboundCanRequestMoreTxs {} =
-    ["TxInboundCanRequestMoreTxs"]
+    ["CanRequestMoreTxs"]
 namesForTxInbound' TraceTxInboundCannotRequestMoreTxs {} =
-    ["TxInboundCannotRequestMoreTxs"]
+    ["CannotRequestMoreTxs"]
 
 instance LogFormatting (TraceTxSubmissionInbound txid tx) where
   forMachine _dtal (TraceTxSubmissionCollected count) =
@@ -631,11 +756,11 @@ instance LogFormatting (TraceTxSubmissionInbound txid tx) where
       ]
 
   asMetrics (TraceTxSubmissionCollected count)=
-    [CounterM "cardano.node.submissions.submitted" (Just count)]
+    [CounterM "TxSubmission.Submitted" (Just count)]
   asMetrics (TraceTxSubmissionProcessed processed) =
-    [ CounterM "cardano.node.submissions.accepted"
+    [ CounterM "TxSubmission.Accepted"
         (Just (ptxcAccepted processed))
-    , CounterM "cardano.node.submissions.rejected"
+    , CounterM "TxSubmission.Rejected"
         (Just (ptxcRejected processed))
     ]
   asMetrics _ = []
@@ -650,30 +775,30 @@ docTxInbound' ::
     (TraceTxSubmissionInbound txid tx))
 docTxInbound' = Documented [
     DocMsg
-    ["TxSubmissionCollected"]
-    [ ("cardano.node.submissions.submitted", "")]
+    ["Collected"]
+    [ ("TxSubmission.Submitted", "")]
     "Number of transactions just about to be inserted."
   ,
     DocMsg
-    ["TxSubmissionProcessed"]
-    [ ("cardano.node.submissions.accepted", "")
-    , ("cardano.node.submissions.rejected", "")
+    ["Processed"]
+    [ ("TxSubmission.Accepted", "")
+    , ("TxSubmission.Rejected", "")
     ]
     "Just processed transaction pass/fail breakdown."
   ,
     DocMsg
-    ["TxInboundTerminated"]
+    ["Terminated"]
     []
     "Server received 'MsgDone'."
   ,
     DocMsg
-    ["TxInboundCanRequestMoreTxs"]
+    ["CanRequestMoreTxs"]
     []
     "There are no replies in flight, but we do know some more txs we\
     \ can ask for, so lets ask for them and more txids."
   ,
     DocMsg
-    ["TxInboundCannotRequestMoreTxs"]
+    ["CannotRequestMoreTxs"]
     []
     "There's no replies in flight, and we have no more txs we can\
     \ ask for so the only remaining thing to do is to ask for more\
@@ -836,25 +961,25 @@ instance
       ]
 
   asMetrics (TraceMempoolAddedTx _tx _mpSzBefore mpSz) =
-    [ IntM "cardano.node.txsInMempool" (fromIntegral $ msNumTxs mpSz)
-    , IntM "cardano.node.mempoolBytes" (fromIntegral $ msNumBytes mpSz)
+    [ IntM "Mempool.TxsInMempool" (fromIntegral $ msNumTxs mpSz)
+    , IntM "Mempool.MempoolBytes" (fromIntegral $ msNumBytes mpSz)
     ]
   asMetrics (TraceMempoolRejectedTx _tx _txApplyErr mpSz) =
-    [ IntM "cardano.node.txsInMempool" (fromIntegral $ msNumTxs mpSz)
-    , IntM "cardano.node.mempoolBytes" (fromIntegral $ msNumBytes mpSz)
+    [ IntM "Mempool.TxsInMempool" (fromIntegral $ msNumTxs mpSz)
+    , IntM "Mempool.MempoolBytes" (fromIntegral $ msNumBytes mpSz)
     ]
   asMetrics (TraceMempoolRemoveTxs _txs mpSz) =
-    [ IntM "cardano.node.txsInMempool" (fromIntegral $ msNumTxs mpSz)
-    , IntM "cardano.node.mempoolBytes" (fromIntegral $ msNumBytes mpSz)
+    [ IntM "Mempool.TxsInMempool" (fromIntegral $ msNumTxs mpSz)
+    , IntM "Mempool.MempoolBytes" (fromIntegral $ msNumBytes mpSz)
     ]
   asMetrics (TraceMempoolManuallyRemovedTxs [] _txs1 mpSz) =
-    [ IntM "cardano.node.txsInMempool" (fromIntegral $ msNumTxs mpSz)
-    , IntM "cardano.node.mempoolBytes" (fromIntegral $ msNumBytes mpSz)
+    [ IntM "Mempool.TxsInMempool" (fromIntegral $ msNumTxs mpSz)
+    , IntM "Mempool.MempoolBytes" (fromIntegral $ msNumBytes mpSz)
     ]
   asMetrics (TraceMempoolManuallyRemovedTxs txs _txs1 mpSz) =
-    [ IntM "cardano.node.txsInMempool" (fromIntegral $ msNumTxs mpSz)
-    , IntM "cardano.node.mempoolBytes" (fromIntegral $ msNumBytes mpSz)
-    , CounterM "cardano.node.txsProcessedNum" (Just (fromIntegral $ length txs))
+    [ IntM "Mempool.TxsInMempool" (fromIntegral $ msNumTxs mpSz)
+    , IntM "Mempool.MempoolBytes" (fromIntegral $ msNumBytes mpSz)
+    , CounterM "Mempool.TxsProcessedNum" (Just (fromIntegral $ length txs))
     ]
 
 instance LogFormatting MempoolSize where
@@ -871,30 +996,30 @@ docMempool' :: forall blk. Documented (TraceEventMempool blk)
 docMempool' = Documented [
     DocMsg
       ["AddedTx"]
-      [ ("cardano.node.txsInMempool","Transactions in mempool")
-      , ("cardano.node.mempoolBytes", "Byte size of the mempool")
+      [ ("Mempool.TxsInMempool","Transactions in mempool")
+      , ("Mempool.MempoolBytes", "Byte size of the mempool")
       ]
       "New, valid transaction that was added to the Mempool."
   , DocMsg
       ["RejectedTx"]
-      [ ("cardano.node.txsInMempool","Transactions in mempool")
-      , ("cardano.node.mempoolBytes", "Byte size of the mempool")
+      [ ("Mempool.TxsInMempool","Transactions in mempool")
+      , ("Mempool.MempoolBytes", "Byte size of the mempool")
       ]
       "New, invalid transaction thas was rejected and thus not added to\
       \ the Mempool."
   , DocMsg
       ["RemoveTxs"]
-      [ ("cardano.node.txsInMempool","Transactions in mempool")
-      , ("cardano.node.mempoolBytes", "Byte size of the mempool")
+      [ ("Mempool.TxsInMempool","Transactions in mempool")
+      , ("Mempool.MempoolBytes", "Byte size of the mempool")
       ]
       "Previously valid transactions that are no longer valid because of\
       \ changes in the ledger state. These transactions have been removed\
       \ from the Mempool."
   , DocMsg
       ["ManuallyRemovedTxs"]
-      [ ("cardano.node.txsInMempool","Transactions in mempool")
-      , ("cardano.node.mempoolBytes", "Byte size of the mempool")
-      , ("cardano.node.txsProcessedNum", "")
+      [ ("Mempool.TxsInMempool","Transactions in mempool")
+      , ("Mempool.MempoolBytes", "Byte size of the mempool")
+      , ("Mempool.TxsProcessedNum", "")
       ]
       "Transactions that have been manually removed from the Mempool."
   ]
@@ -905,62 +1030,58 @@ docMempool' = Documented [
 --------------------------------------------------------------------------------
 
 severityForge :: ForgeTracerType blk -> SeverityS
-severityForge (Left t)  = severityForge' t
-severityForge (Right t) = severityForge''' t
-
-severityForge' :: TraceLabelCreds (TraceForgeEvent blk) -> SeverityS
-severityForge' (TraceLabelCreds _t e) = severityForge'' e
+severityForge (Left t)  = severityForge'' t
+severityForge (Right t) = severityForge'''' t
 
 severityForge'' :: TraceForgeEvent blk -> SeverityS
-severityForge'' TraceStartLeadershipCheck {}  = Info
-severityForge'' TraceSlotIsImmutable {}       = Error
-severityForge'' TraceBlockFromFuture {}       = Error
-severityForge'' TraceBlockContext {}          = Debug
-severityForge'' TraceNoLedgerState {}         = Error
-severityForge'' TraceLedgerState {}           = Debug
-severityForge'' TraceNoLedgerView {}          = Error
-severityForge'' TraceLedgerView {}            = Debug
-severityForge'' TraceForgeStateUpdateError {} = Error
-severityForge'' TraceNodeCannotForge {}       = Error
-severityForge'' TraceNodeNotLeader {}         = Info
-severityForge'' TraceNodeIsLeader {}          = Info
-severityForge'' TraceForgedBlock {}           = Info
-severityForge'' TraceDidntAdoptBlock {}       = Error
-severityForge'' TraceForgedInvalidBlock {}    = Error
-severityForge'' TraceAdoptedBlock {}          = Info
+severityForge'' TraceStartLeadershipCheck {}    = Info
+severityForge'' TraceSlotIsImmutable {}         = Error
+severityForge'' TraceBlockFromFuture {}         = Error
+severityForge'' TraceBlockContext {}            = Debug
+severityForge'' TraceNoLedgerState {}           = Error
+severityForge'' TraceLedgerState {}             = Debug
+severityForge'' TraceNoLedgerView {}            = Error
+severityForge'' TraceLedgerView {}              = Debug
+severityForge'' TraceForgeStateUpdateError {}   = Error
+severityForge'' TraceNodeCannotForge {}         = Error
+severityForge'' TraceNodeNotLeader {}           = Info
+severityForge'' TraceNodeIsLeader {}            = Info
+severityForge'' TraceForgeTickedLedgerState {}  = Debug
+severityForge'' TraceForgingMempoolSnapshot {}  = Debug
+severityForge'' TraceForgedBlock {}             = Info
+severityForge'' TraceDidntAdoptBlock {}         = Error
+severityForge'' TraceForgedInvalidBlock {}      = Error
+severityForge'' TraceAdoptedBlock {}            = Info
 
-severityForge''' :: TraceLabelCreds TraceStartLeadershipCheckPlus -> SeverityS
-severityForge''' _ = Info
+severityForge'''' :: TraceStartLeadershipCheckPlus -> SeverityS
+severityForge'''' _ = Info
 
 namesForForge :: ForgeTracerType blk -> [Text]
-namesForForge (Left t)  = namesForForge' t
-namesForForge (Right t) = namesForForge''' t
-
-namesForForge' :: TraceLabelCreds (TraceForgeEvent blk) -> [Text]
-namesForForge' (TraceLabelCreds _t e) = namesForForge'' e
+namesForForge (Left t)  = namesForForge'' t
+namesForForge (Right t) = namesForForge'''' t
 
 namesForForge'' :: TraceForgeEvent blk -> [Text]
-namesForForge'' TraceStartLeadershipCheck {}  = ["StartLeadershipCheck"]
-namesForForge'' TraceSlotIsImmutable {}       = ["SlotIsImmutable"]
-namesForForge'' TraceBlockFromFuture {}       = ["BlockFromFuture"]
-namesForForge'' TraceBlockContext {}          = ["BlockContext"]
-namesForForge'' TraceNoLedgerState {}         = ["NoLedgerState"]
-namesForForge'' TraceLedgerState {}           = ["LedgerState"]
-namesForForge'' TraceNoLedgerView {}          = ["NoLedgerView"]
-namesForForge'' TraceLedgerView {}            = ["LedgerView"]
-namesForForge'' TraceForgeStateUpdateError {} = ["ForgeStateUpdateError"]
-namesForForge'' TraceNodeCannotForge {}       = ["NodeCannotForge"]
-namesForForge'' TraceNodeNotLeader {}         = ["NodeNotLeader"]
-namesForForge'' TraceNodeIsLeader {}          = ["NodeIsLeader"]
-namesForForge'' TraceForgedBlock {}           = ["ForgedBlock"]
-namesForForge'' TraceDidntAdoptBlock {}       = ["DidntAdoptBlock"]
-namesForForge'' TraceForgedInvalidBlock {}    = ["ForgedInvalidBlock"]
-namesForForge'' TraceAdoptedBlock {}          = ["AdoptedBlock"]
+namesForForge'' TraceStartLeadershipCheck {}   = ["StartLeadershipCheck"]
+namesForForge'' TraceSlotIsImmutable {}        = ["SlotIsImmutable"]
+namesForForge'' TraceBlockFromFuture {}        = ["BlockFromFuture"]
+namesForForge'' TraceBlockContext {}           = ["BlockContext"]
+namesForForge'' TraceNoLedgerState {}          = ["NoLedgerState"]
+namesForForge'' TraceLedgerState {}            = ["LedgerState"]
+namesForForge'' TraceNoLedgerView {}           = ["NoLedgerView"]
+namesForForge'' TraceLedgerView {}             = ["LedgerView"]
+namesForForge'' TraceForgeStateUpdateError {}  = ["ForgeStateUpdateError"]
+namesForForge'' TraceNodeCannotForge {}        = ["NodeCannotForge"]
+namesForForge'' TraceNodeNotLeader {}          = ["NodeNotLeader"]
+namesForForge'' TraceNodeIsLeader {}           = ["NodeIsLeader"]
+namesForForge'' TraceForgeTickedLedgerState {} = ["ForgeTickedLedgerState"]
+namesForForge'' TraceForgingMempoolSnapshot {} = ["ForgingMempoolSnapshot"]
+namesForForge'' TraceForgedBlock {}            = ["ForgedBlock"]
+namesForForge'' TraceDidntAdoptBlock {}        = ["DidntAdoptBlock"]
+namesForForge'' TraceForgedInvalidBlock {}     = ["ForgedInvalidBlock"]
+namesForForge'' TraceAdoptedBlock {}           = ["AdoptedBlock"]
 
-namesForForge''' :: TraceLabelCreds TraceStartLeadershipCheckPlus -> [Text]
-namesForForge''' (TraceLabelCreds _ TraceStartLeadershipCheckPlus {})  =
-  ["StartLeadershipCheckPlus"]
-
+namesForForge'''' :: TraceStartLeadershipCheckPlus -> [Text]
+namesForForge'''' TraceStartLeadershipCheckPlus{} = ["StartLeadershipCheckPlus"]
 
 instance ( tx ~ GenTx blk
          , ConvertRawHash blk
@@ -1045,6 +1166,20 @@ instance ( tx ~ GenTx blk
       [ "kind" .= String "TraceNodeIsLeader"
       , "slot" .= toJSON (unSlotNo slotNo)
       ]
+  forMachine dtal (TraceForgeTickedLedgerState slotNo prevPt) =
+    mconcat
+      [ "kind" .= String "TraceForgeTickedLedgerState"
+      , "slot" .= toJSON (unSlotNo slotNo)
+      , "prev" .= renderPointForDetails dtal prevPt
+      ]
+  forMachine dtal (TraceForgingMempoolSnapshot slotNo prevPt mpHash mpSlot) =
+    mconcat
+      [ "kind"        .= String "TraceForgingMempoolSnapshot"
+      , "slot"        .= toJSON (unSlotNo slotNo)
+      , "prev"        .= renderPointForDetails dtal prevPt
+      , "mempoolHash" .= String (renderChainHash @blk (renderHeaderHash (Proxy @blk)) mpHash)
+      , "mempoolSlot" .= toJSON (unSlotNo mpSlot)
+      ]
   forMachine _dtal (TraceForgedBlock slotNo _ blk _) =
     mconcat
       [ "kind" .= String "TraceForgedBlock"
@@ -1088,6 +1223,8 @@ instance ( tx ~ GenTx blk
           (blockHash blk)
       , "blockSize" .= toJSON (estimateBlockSize (getHeader blk))
       ]
+
+
 
   forHuman (TraceStartLeadershipCheck slotNo) =
       "Checking for leadership in slot " <> showT (unSlotNo slotNo)
@@ -1133,6 +1270,20 @@ instance ( tx ~ GenTx blk
       "Not leading slot " <> showT (unSlotNo slotNo)
   forHuman (TraceNodeIsLeader slotNo) =
       "Leading slot " <> showT (unSlotNo slotNo)
+  forHuman (TraceForgeTickedLedgerState slotNo prevPt) =
+      "While forging in slot "
+        <> showT (unSlotNo slotNo)
+        <> " we ticked the ledger state ahead from "
+        <> renderPointAsPhrase prevPt
+  forHuman (TraceForgingMempoolSnapshot slotNo prevPt mpHash mpSlot) =
+      "While forging in slot "
+        <> showT (unSlotNo slotNo)
+        <> " we acquired a mempool snapshot valid against "
+        <> renderPointAsPhrase prevPt
+        <> " from a mempool that was prepared for "
+        <> renderChainHash @blk (renderHeaderHash (Proxy @blk)) mpHash
+        <> " ticked to slot "
+        <> showT (unSlotNo mpSlot)
   forHuman (TraceForgedBlock slotNo _ _ _) =
       "Forged block in slot " <> showT (unSlotNo slotNo)
   forHuman (TraceDidntAdoptBlock slotNo _) =
@@ -1145,7 +1296,6 @@ instance ( tx ~ GenTx blk
       "Adopted block forged in slot "
         <> showT (unSlotNo slotNo)
         <> ": " <> renderHeaderHash (Proxy @blk) (blockHash blk)
-      --  <> ", TxIds: " <> showT (map txId txs) TODO Fix
 
   asMetrics (TraceForgeStateUpdateError slot reason) =
     IntM "cardano.node.forgeStateUpdateError" (fromIntegral $ unSlotNo slot) :
@@ -1153,82 +1303,84 @@ instance ( tx ~ GenTx blk
         Nothing -> []
         Just kesInfo ->
           [ IntM
-              "cardano.node.operationalCertificateStartKESPeriod"
+              "Forge.OperationalCertificateStartKESPeriod"
               (fromIntegral . unKESPeriod . HotKey.kesStartPeriod $ kesInfo)
           , IntM
-              "cardano.node.operationalCertificateExpiryKESPeriod"
+              "Forge.OperationalCertificateExpiryKESPeriod"
               (fromIntegral . unKESPeriod . HotKey.kesEndPeriod $ kesInfo)
           , IntM
-              "cardano.node.currentKESPeriod"
+              "Forge.CurrentKESPeriod"
               0
           , IntM
-              "cardano.node.remainingKESPeriods"
+              "Forge.RemainingKESPeriods"
               0
           ])
 
   asMetrics (TraceStartLeadershipCheck slot) =
-    [IntM "cardano.node.aboutToLeadSlotLast" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.AboutToLeadSlotLast" (fromIntegral $ unSlotNo slot)]
   asMetrics (TraceSlotIsImmutable slot _tipPoint _tipBlkNo) =
-    [IntM "cardano.node.slotIsImmutable" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.SlotIsImmutable" (fromIntegral $ unSlotNo slot)]
   asMetrics (TraceBlockFromFuture slot _slotNo) =
-    [IntM "cardano.node.blockFromFuture" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.BlockFromFuture" (fromIntegral $ unSlotNo slot)]
   asMetrics (TraceBlockContext slot _tipBlkNo _tipPoint) =
-    [IntM "cardano.node.blockContext" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.BlockContext" (fromIntegral $ unSlotNo slot)]
   asMetrics (TraceNoLedgerState slot _) =
-    [IntM "cardano.node.couldNotForgeSlotLast" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.CouldNotForgeSlotLast" (fromIntegral $ unSlotNo slot)]
   asMetrics (TraceLedgerState slot _) =
-    [IntM "cardano.node.ledgerState" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.LedgerState" (fromIntegral $ unSlotNo slot)]
   asMetrics (TraceNoLedgerView slot _) =
-    [IntM "cardano.node.couldNotForgeSlotLast" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.CouldNotForgeSlotLast" (fromIntegral $ unSlotNo slot)]
   asMetrics (TraceLedgerView slot) =
-    [IntM "cardano.node.ledgerView" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.LedgerView" (fromIntegral $ unSlotNo slot)]
   -- see above
   asMetrics (TraceNodeCannotForge slot _reason) =
-    [IntM "cardano.node.nodeCannotForge" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.NodeCannotForge" (fromIntegral $ unSlotNo slot)]
   asMetrics (TraceNodeNotLeader slot) =
-    [IntM "cardano.node.nodeNotLeader" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.NodeNotLeader" (fromIntegral $ unSlotNo slot)]
   asMetrics (TraceNodeIsLeader slot) =
-    [IntM "cardano.node.nodeIsLeader" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.NodeIsLeader" (fromIntegral $ unSlotNo slot)]
+  asMetrics TraceForgeTickedLedgerState {} = []
+  asMetrics TraceForgingMempoolSnapshot {} = []
   asMetrics (TraceForgedBlock slot _ _ _) =
-    [IntM "cardano.node.forgedSlotLast" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.ForgedSlotLast" (fromIntegral $ unSlotNo slot)]
   asMetrics (TraceDidntAdoptBlock slot _) =
-    [IntM "cardano.node.notAdoptedSlotLast" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.NotAdoptedSlotLast" (fromIntegral $ unSlotNo slot)]
   asMetrics (TraceForgedInvalidBlock slot _ _) =
-    [IntM "cardano.node.forgedInvalidSlotLast" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.ForgedInvalidSlotLast" (fromIntegral $ unSlotNo slot)]
   asMetrics (TraceAdoptedBlock slot _ _) =
-    [IntM "cardano.node.adoptedSlotLast" (fromIntegral $ unSlotNo slot)]
+    [IntM "Forge.AdoptedOwnBlockSlotLast" (fromIntegral $ unSlotNo slot)]
 
 instance LogFormatting TraceStartLeadershipCheckPlus where
   forMachine _dtal TraceStartLeadershipCheckPlus {..} =
-        mconcat [ "kind" .= String "TraceStartLeadershipCheckPlus"
-                 , "slotNo" .= toJSON (unSlotNo tsSlotNo)
-                 , "utxoSize" .= Number (fromIntegral tsUtxoSize)
-                 , "delegMapSize" .= Number (fromIntegral tsUtxoSize)
-                 , "chainDensity" .= Number (fromRational (toRational tsChainDensity))
-                 ]
+        mconcat [ "kind" .= String "TraceStartLeadershipCheck"
+                , "slot" .= toJSON (unSlotNo tsSlotNo)
+                , "utxoSize" .= Number (fromIntegral tsUtxoSize)
+                , "delegMapSize" .= Number (fromIntegral tsUtxoSize)
+                , "chainDensity" .= Number (fromRational (toRational tsChainDensity))
+                ]
   forHuman TraceStartLeadershipCheckPlus {..} =
       "Checking for leadership in slot " <> showT (unSlotNo tsSlotNo)
       <> " utxoSize " <> showT tsUtxoSize
       <> " delegMapSize " <> showT tsDelegMapSize
       <> " chainDensity " <> showT tsChainDensity
   asMetrics TraceStartLeadershipCheckPlus {..} =
-    [IntM "cardano.node.utxoSize" (fromIntegral tsUtxoSize),
-     IntM "cardano.node.delegMapSize" (fromIntegral tsDelegMapSize)]
+    [IntM "Forge.UtxoSize" (fromIntegral tsUtxoSize),
+     IntM "Forge.DelegMapSize" (fromIntegral tsDelegMapSize)]
 
-docForge :: Documented (Either (TraceLabelCreds (TraceForgeEvent blk))
-                               (TraceLabelCreds TraceStartLeadershipCheckPlus))
+docForge :: Documented (Either (TraceForgeEvent blk)
+                               TraceStartLeadershipCheckPlus)
 docForge = addDocumentedNamespace [] docForge'
 
-docForge' :: Documented (Either (TraceLabelCreds (TraceForgeEvent blk))
-                               (TraceLabelCreds TraceStartLeadershipCheckPlus))
+docForge' :: Documented (Either (TraceForgeEvent blk)
+                               TraceStartLeadershipCheckPlus)
 docForge' = Documented [
     DocMsg
       ["StartLeadershipCheck"]
-      [("cardano.node.aboutToLeadSlotLast", "")]
+      [("Forge.AboutToLeadSlotLast", "")]
       "Start of the leadership check."
   , DocMsg
       ["SlotIsImmutable"]
-      [("cardano.node.slotIsImmutable", "")]
+      [("Forge.SlotIsImmutable", "")]
       "Leadership check failed: the tip of the ImmutableDB inhabits the\
       \  current slot\
       \ \
@@ -1248,7 +1400,7 @@ docForge' = Documented [
       \ See also <https://github.com/input-output-hk/ouroboros-network/issues/1462>"
   , DocMsg
       ["BlockFromFuture"]
-      [("cardano.node.blockFromFuture", "")]
+      [("Forge.BlockFromFuture", "")]
       "Leadership check failed: the current chain contains a block from a slot\
       \  /after/ the current slot\
       \ \
@@ -1260,7 +1412,7 @@ docForge' = Documented [
       \  See also <https://github.com/input-output-hk/ouroboros-network/issues/1462>"
   , DocMsg
       ["BlockContext"]
-      [("cardano.node.blockContext", "")]
+      [("Forge.BlockContext", "")]
       "We found out to which block we are going to connect the block we are about\
       \  to forge.\
       \ \
@@ -1271,7 +1423,7 @@ docForge' = Documented [
       \  the recorded block number."
   , DocMsg
       ["NoLedgerState"]
-      [("cardano.node.couldNotForgeSlotLast", "")]
+      [("Forge.CouldNotForgeSlotLast", "")]
       "Leadership check failed: we were unable to get the ledger state for the\
       \  point of the block we want to connect to\
       \ \
@@ -1285,7 +1437,7 @@ docForge' = Documented [
       \  state for)."
   , DocMsg
       ["LedgerState"]
-      [("cardano.node.ledgerState", "")]
+      [("Forge.LedgerState", "")]
       "We obtained a ledger state for the point of the block we want to\
       \  connect to\
       \ \
@@ -1294,7 +1446,7 @@ docForge' = Documented [
       \  state for)."
   , DocMsg
       ["NoLedgerView"]
-      [("cardano.node.couldNotForgeSlotLast", "")]
+      [("Forge.CouldNotForgeSlotLast", "")]
       "Leadership check failed: we were unable to get the ledger view for the\
       \  current slot number\
       \ \
@@ -1304,16 +1456,16 @@ docForge' = Documented [
       \  We record also the failure returned by 'forecastFor'."
   , DocMsg
       ["LedgerView"]
-      [("cardano.node.ledgerView", "")]
+      [("Forge.LedgerView", "")]
       "We obtained a ledger view for the current slot number\
       \ \
       \  We record the current slot number."
   , DocMsg
       ["ForgeStateUpdateError"]
-      [ ("cardano.node.operationalCertificateStartKESPeriod", "")
-      , ("cardano.node.operationalCertificateExpiryKESPeriod", "")
-      , ("cardano.node.currentKESPeriod", "")
-      , ("cardano.node.remainingKESPeriods", "")
+      [ ("Forge.OperationalCertificateStartKESPeriod", "")
+      , ("Forge.OperationalCertificateExpiryKESPeriod", "")
+      , ("Forge.CurrentKESPeriod", "")
+      , ("Forge.RemainingKESPeriods", "")
       ]
       "Updating the forge state failed.\
       \ \
@@ -1322,7 +1474,7 @@ docForge' = Documented [
       \  We record the error returned by 'updateForgeState'."
   , DocMsg
       ["NodeCannotForge"]
-      [("cardano.node.nodeCannotForge", "")]
+      [("Forge.NodeCannotForge", "")]
       "We did the leadership check and concluded that we should lead and forge\
       \  a block, but cannot.\
       \ \
@@ -1331,20 +1483,20 @@ docForge' = Documented [
       \  Records why we cannot forge a block."
   , DocMsg
       ["NodeNotLeader"]
-      [("cardano.node.nodeNotLeader", "")]
+      [("Forge.NodeNotLeader", "")]
       "We did the leadership check and concluded we are not the leader\
       \ \
       \  We record the current slot number"
   , DocMsg
       ["NodeIsLeader"]
-      [("cardano.node.nodeIsLeader", "")]
+      [("Forge.NodeIsLeader", "")]
       "We did the leadership check and concluded we /are/ the leader\
       \\n\
       \  The node will soon forge; it is about to read its transactions from the\
       \  Mempool. This will be followed by ForgedBlock."
   , DocMsg
       ["ForgedBlock"]
-      [("cardano.node.forgedSlotLast", "")]
+      [("Forge.ForgedSlotLast", "")]
       "We forged a block.\
       \\n\
       \  We record the current slot number, the point of the predecessor, the block\
@@ -1361,27 +1513,27 @@ docForge' = Documented [
       \  * ForgedInvalidBlock (hopefully never -- this would indicate a bug)"
   , DocMsg
       ["DidntAdoptBlock"]
-      [("cardano.node.notAdoptedSlotLast", "")]
+      [("Forge.NotAdoptedSlotLast", "")]
       "We did not adopt the block we produced, but the block was valid. We\
       \  must have adopted a block that another leader of the same slot produced\
       \  before we got the chance of adopting our own block. This is very rare,\
       \  this warrants a warning."
   , DocMsg
       ["ForgedInvalidBlock"]
-      [("cardano.node.forgedInvalidSlotLast", "")]
+      [("Forge.ForgedInvalidSlotLast", "")]
       "We forged a block that is invalid according to the ledger in the\
       \  ChainDB. This means there is an inconsistency between the mempool\
       \  validation and the ledger validation. This is a serious error!"
   , DocMsg
       ["AdoptedBlock"]
-      [("cardano.node.adoptedSlotLast", "")]
+      [("Forge.AdoptedOwnBlockSlotLast", "")]
       "We adopted the block we produced, we also trace the transactions\
       \  that were adopted."
   , DocMsg
       ["StartLeadershipCheckPlus"]
-      [ ("cardano.node.aboutToLeadSlotLast", "")
-      , ("cardano.node.utxoSize", "")
-      , ("cardano.node.delegMapSize", "")
+      [ ("Forge.AboutToLeadSlotLast", "")
+      , ("Forge.UtxoSize", "")
+      , ("Forge.DelegMapSize", "")
       ]
       "We adopted the block we produced, we also trace the transactions\
       \  that were adopted."

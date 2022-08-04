@@ -6,6 +6,8 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 
+{- HLINT ignore "Avoid lambda using `infix`" -}
+
 -- | Cardano addresses: payment and stake addresses.
 --
 module Cardano.Api.Address (
@@ -95,9 +97,10 @@ import qualified Cardano.Ledger.Credential as Shelley
 import           Cardano.Ledger.Crypto (StandardCrypto)
 import qualified Plutus.V1.Ledger.Api as Plutus
 
+import           Cardano.Api.EraCast
 import           Cardano.Api.Eras
-import           Cardano.Api.HasTypeProxy
 import           Cardano.Api.Hash
+import           Cardano.Api.HasTypeProxy
 import           Cardano.Api.Key
 import           Cardano.Api.KeysByron
 import           Cardano.Api.KeysShelley
@@ -106,6 +109,7 @@ import           Cardano.Api.Script
 import           Cardano.Api.SerialiseBech32
 import           Cardano.Api.SerialiseRaw
 import           Cardano.Api.Utils
+import           Control.DeepSeq (NFData(..), deepseq)
 
 
 
@@ -192,6 +196,10 @@ deriving instance Eq   (Address addrtype)
 deriving instance Ord  (Address addrtype)
 deriving instance Show (Address addrtype)
 
+instance NFData (Address addrtype) where
+  rnf = \case
+    ByronAddress address -> deepseq address ()
+    ShelleyAddress n pc sr -> deepseq (deepseq (deepseq n pc) sr) ()
 
 instance HasTypeProxy addrtype => HasTypeProxy (Address addrtype) where
     data AsType (Address addrtype) = AsAddress (AsType addrtype)
@@ -337,6 +345,9 @@ data AddressInEra era where
                   -> Address addrtype
                   -> AddressInEra era
 
+instance NFData (AddressInEra era) where
+  rnf (AddressInEra t a) = deepseq (deepseq t a) ()
+
 instance IsCardanoEra era => ToJSON (AddressInEra era) where
   toJSON = Aeson.String . serialiseAddress
 
@@ -344,6 +355,11 @@ instance IsShelleyBasedEra era => FromJSON (AddressInEra era) where
   parseJSON = withText "AddressInEra" $ \txt -> do
     addressAny <- runParsecParser parseAddressAny txt
     pure $ anyAddressInShelleyBasedEra addressAny
+
+instance EraCast AddressInEra where
+  eraCast toEra' (AddressInEra addressTypeInEra address) = AddressInEra
+    <$> eraCast toEra' addressTypeInEra
+    <*> pure address
 
 parseAddressAny :: Parsec.Parser AddressAny
 parseAddressAny = do
@@ -387,6 +403,10 @@ data AddressTypeInEra addrtype era where
 
 deriving instance Show (AddressTypeInEra addrtype era)
 
+instance NFData (AddressTypeInEra addrtype era) where
+  rnf = \case
+    ByronAddressInAnyEra -> ()
+    ShelleyAddressInEra sbe -> deepseq sbe ()
 
 instance HasTypeProxy era => HasTypeProxy (AddressInEra era) where
     data AsType (AddressInEra era) = AsAddressInEra (AsType era)
@@ -413,6 +433,13 @@ instance IsCardanoEra era => SerialiseAddress (AddressInEra era) where
     deserialiseAddress _ t =
       anyAddressInEra cardanoEra =<< deserialiseAddress AsAddressAny t
 
+instance EraCast (AddressTypeInEra addrtype) where
+  eraCast toEra' v = case v of
+    ByronAddressInAnyEra -> pure ByronAddressInAnyEra
+    ShelleyAddressInEra previousEra ->
+      case cardanoEraStyle toEra' of
+        LegacyByronEra -> Left $ EraCastError v (shelleyBasedToCardanoEra previousEra) toEra'
+        ShelleyBasedEra newSbe -> Right $ ShelleyAddressInEra newSbe
 
 byronAddressInEra :: Address ByronAddr -> AddressInEra era
 byronAddressInEra = AddressInEra ByronAddressInAnyEra

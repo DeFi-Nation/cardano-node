@@ -1,7 +1,9 @@
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving#-}
-{-# OPTIONS_GHC -Wno-deprecations -Wno-orphans #-}
+
+{-# OPTIONS_GHC -Wno-orphans #-}
+
 {- HLINT ignore "Use head" -}
+
 module Cardano.Analysis.Chain (module Cardano.Analysis.Chain) where
 
 import Cardano.Prelude hiding (head)
@@ -41,6 +43,13 @@ slotStart Genesis{..} =
   . (* slotLength)
   . fromIntegral
   . unSlotNo
+
+impliedSlot :: Genesis -> UTCTime -> SlotNo
+impliedSlot Genesis{..} =
+  SlotNo
+  . floor
+  . (/ slotLength)
+  . (`Time.diffUTCTime` systemStart)
 
 sinceSlot :: UTCTime -> SlotStart -> NominalDiffTime
 sinceSlot t (SlotStart start) = Time.diffUTCTime t start

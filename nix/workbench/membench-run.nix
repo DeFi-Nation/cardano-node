@@ -67,7 +67,7 @@ in
       ''
         yq '
         .
-        | .TraceOptionResourceFreqency = 1000
+        | .TraceOptionResourceFrequency = 1000
         ' ${node-measured}/configuration/cardano/mainnet-config-new-tracing.yaml > config.json
       ''}
   cp -v ${node-measured}/configuration/cardano/*-genesis.json .
@@ -137,7 +137,7 @@ in
 
       map(select(${if legacyTracing
                    then ".ns[0] == \"cardano.node.resources\""
-                   else ".ns    == \"Cardano.Node.Resources\""}) | .data)
+                   else ".ns    == \"Resources\""}) | .data)
     | { RSS:          map(.RSS) | minavgmax
       , Heap:         map(.Heap) | minavgmax
       , CentiCpuMax:  map(.CentiCpu) | max

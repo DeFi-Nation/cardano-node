@@ -15,13 +15,14 @@ library
   hs-source-dirs:     src
   exposed-modules:    Cardano.Logging.Resources
                       Cardano.Logging.Resources.Types
+                      Cardano.Logging.Resources.Dummy
 
   default-language:   Haskell2010
   default-extensions: OverloadedStrings
   build-depends:      base >=4.12 && <5
                       , trace-dispatcher
                       , text
-                      , aeson
+                      , aeson                         >= 2.1.0.0
 
   if os(windows)
      build-depends:    Win32
@@ -59,7 +60,7 @@ test-suite trace-resources-test
   build-depends:       base >=4.12 && <5
                       , trace-dispatcher
                       , text
-                      , aeson
+                      , aeson                         >= 2.1.0.0
                       , QuickCheck
                       , tasty
                       , tasty-quickcheck

@@ -65,6 +65,7 @@ import           Data.Aeson.Types (Parser, ToJSONKey)
 import           Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
+import qualified Data.ByteString.Short as Short
 import qualified Data.Map.Merge.Strict as Map
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -87,14 +88,13 @@ import           Cardano.Api.SerialiseRaw
 import           Cardano.Api.SerialiseUsing
 import           Cardano.Api.Utils (failEitherWith)
 
-
 -- ----------------------------------------------------------------------------
 -- Lovelace
 --
 
 newtype Lovelace = Lovelace Integer
   deriving stock (Eq, Ord, Show)
-  deriving newtype (Enum, Num, ToJSON, FromJSON, ToCBOR, FromCBOR)
+  deriving newtype (Enum, Real, Integral, Num, ToJSON, FromJSON, ToCBOR, FromCBOR)
 
 instance Semigroup Lovelace where
   Lovelace a <> Lovelace b = Lovelace (a + b)
@@ -143,7 +143,7 @@ quantityToLovelace :: Quantity -> Lovelace
 quantityToLovelace (Quantity x) = Lovelace x
 
 
-newtype PolicyId = PolicyId ScriptHash
+newtype PolicyId = PolicyId { unPolicyId :: ScriptHash }
   deriving stock (Eq, Ord)
   deriving (Show, IsString, ToJSON, FromJSON) via UsingRawBytesHex PolicyId
 
@@ -277,7 +277,7 @@ toMaryValue v =
     toMaryPolicyID (PolicyId sh) = Mary.PolicyID (toShelleyScriptHash sh)
 
     toMaryAssetName :: AssetName -> Mary.AssetName
-    toMaryAssetName (AssetName n) = Mary.AssetName n
+    toMaryAssetName (AssetName n) = Mary.AssetName $ Short.toShort n
 
 
 fromMaryValue :: Mary.Value StandardCrypto -> Value
@@ -294,7 +294,7 @@ fromMaryValue (Mary.Value lovelace other) =
     fromMaryPolicyID (Mary.PolicyID sh) = PolicyId (fromShelleyScriptHash sh)
 
     fromMaryAssetName :: Mary.AssetName -> AssetName
-    fromMaryAssetName (Mary.AssetName n) = AssetName n
+    fromMaryAssetName (Mary.AssetName n) = AssetName $ Short.fromShort n
 
 -- | Calculate cost of making a UTxO entry for a given 'Value' and
 -- mininimum UTxO value derived from the 'ProtocolParameters'

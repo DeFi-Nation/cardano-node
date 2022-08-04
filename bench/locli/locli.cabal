@@ -10,12 +10,50 @@ license-files:
   NOTICE
 build-type:            Simple
 
-library
+common base
+  default-language:    Haskell2010
+  default-extensions:  BangPatterns
+                       BlockArguments
+                       DeriveGeneric
+                       DerivingStrategies
+                       DerivingVia
+                       FlexibleContexts
+                       FlexibleInstances
+                       GADTs
+                       ImportQualifiedPost
+                       LambdaCase
+                       MultiParamTypeClasses
+                       NamedFieldPuns
+                       NoImplicitPrelude
+                       OverloadedStrings
+                       PartialTypeSignatures
+                       RankNTypes
+                       RecordWildCards
+                       ScopedTypeVariables
+                       StandaloneDeriving
+                       TupleSections
+                       TypeApplications
+                       TypeFamilies
+                       TypeInType
+                       ViewPatterns
 
+  ghc-options:         -Wall
+                       -Wincomplete-record-updates
+                       -Wincomplete-uni-patterns
+                       -Wredundant-constraints
+                       -Wpartial-fields
+                       -Wcompat
+                       -Wno-all-missed-specialisations
+
+  build-depends:       base
+
+library
+  import:              base
   hs-source-dirs:      src
 
   exposed-modules:     Data.Accum
-                       Data.Distribution
+                       Data.CDF
+                       Data.DataDomain
 
                        Cardano.Command
                        Cardano.TopHandler
@@ -29,17 +67,17 @@ library
                        Cardano.Analysis.ChainFilter
                        Cardano.Analysis.Context
                        Cardano.Analysis.Ground
-                       Cardano.Analysis.MachTimeline
+                       Cardano.Analysis.MachPerf
                        Cardano.Analysis.Version
 
                        Cardano.Unlog.LogObject
+                       Cardano.Unlog.Org
                        Cardano.Unlog.Render
                        Cardano.Unlog.Resources
 
   other-modules:       Paths_locli
 
-  build-depends:       base
-                     , aeson
+  build-depends:       aeson
                      , aeson-pretty
                      , async
                      , attoparsec
@@ -47,23 +85,28 @@ library
                      , bytestring
                      , cardano-git-rev
                      , cardano-prelude
+                     , cardano-ledger-core
                      , iohk-monitoring
                      , cardano-slotting
                      , containers
                      , deepseq
                      , directory
+                     , extra
                      , filepath
                      , file-embed
                      , gnuplot
                      , Histogram
                      , optparse-applicative-fork
                      , optparse-generic
+                     , ouroboros-consensus
+                     -- for Data.SOP.Strict:
                      , ouroboros-network
                      , process
                      , quiet
                      , scientific
                      , split
                      , statistics
+                     , system-filepath
                      , template-haskell
                      , text
                      , text-short
@@ -75,44 +118,17 @@ library
                      , utf8-string
                      , vector
 
-  default-language:    Haskell2010
-  default-extensions:  BangPatterns
-                       BlockArguments
-                       DerivingStrategies
-                       DerivingVia
-                       FlexibleContexts
-                       FlexibleInstances
-                       GADTs
-                       ImportQualifiedPost
-                       LambdaCase
-                       NamedFieldPuns
-                       NoImplicitPrelude
-                       OverloadedStrings
-                       PartialTypeSignatures
-                       RankNTypes
-                       RecordWildCards
-                       ScopedTypeVariables
-                       StandaloneDeriving
-                       TupleSections
-                       TypeApplications
-
-  ghc-options:         -Wall
-                       -Wincomplete-record-updates
-                       -Wincomplete-uni-patterns
-                       -Wredundant-constraints
-                       -Wpartial-fields
-                       -Wcompat
-                       -Wno-all-missed-specialisations
-
 executable locli
+  import:              base
+
   hs-source-dirs:      app
   main-is:             locli.hs
-  default-language:    Haskell2010
   ghc-options:         -threaded
                        -Wall
                        -rtsopts
                        "-with-rtsopts=-T -N7 -A2m -qb -H64m"
-  build-depends:       base
+
+  build-depends:       aeson
                      , cardano-prelude
                      , locli
                      , optparse-applicative-fork
@@ -120,4 +136,21 @@ executable locli
                      , text-short
                      , transformers
                      , transformers-except
-  default-extensions:  NoImplicitPrelude
+
+test-suite test-locli
+  import:               base
+
+  hs-source-dirs:       test
+  main-is:              test-locli.hs
+  type:                 exitcode-stdio-1.0
+  ghc-options:          -threaded -rtsopts -with-rtsopts=-N -with-rtsopts=-T
+
+  build-depends:        cardano-prelude
+                      , containers
+                      , hedgehog
+                      , hedgehog-extras
+                      , locli
+                      , text
+
+  other-modules:        Test.Analysis.CDF
+                        Test.Unlog.Org

@@ -148,6 +148,8 @@ case "$op" in
         local cache_key_input=$4
         local cache_key=$5
 
+        progress "genesis" "new one:  $(yellow profile) $(blue $profile_json) $(yellow node_specs) $(blue $node_specs) $(yellow dir) $(blue $dir) $(yellow cache_key) $(blue $cache_key) $(yellow cache_key_input) $(blue $cache_key_input)"
+
         rm -rf   "$dir"/{*-keys,byron,pools,nodes,*.json,*.params,*.version}
         mkdir -p "$dir"
 
@@ -155,10 +157,9 @@ case "$op" in
            | . * ($p.genesis.shelley // {})
            | . * ($p.genesis.alonzo // {})
            ' --slurpfile prof       "$profile_json"  \
-           "$global_basedir"/profiles/presets/mainnet/genesis/genesis-alonzo.json \
+           "$global_basedir"/profiles/presets/mainnet/genesis/genesis.alonzo.json \
            >   "$dir"/genesis.alonzo.spec.json
 
-        msg "genesis:  creating initial genesis"
         cardano-cli genesis create --genesis-dir "$dir"/ \
             $(jq '.cli_args.createSpec | join(" ")' "$profile_json" --raw-output)
 
@@ -173,23 +174,40 @@ case "$op" in
         sponge "$dir"/genesis.spec.json
 
         msg "genesis:  mutating into staked genesis"
+#         local time=(
+#             -f '{
+# , "wall_clock_s":       %e
+# , "user_cpu_s":         %U
+# , "sys_cpu_s":          %S
+# , "avg_cpu_pct":       "%P"
+# , "rss_peak_kb":        %M
+# , "ctxsw_involuntary":  %c
+# , "ctxsw_volunt_waits": %w
+# , "pageflt_major":      %F
+# , "pageflt_minor":      %R
+# , "io_fs_reads":        %I
+# , "io_fs_writes":       %O
+# }'
+#             -o "$dir"/cardano-cli-execution-stats.json
+#         )
         params=(--genesis-dir "$dir"
                 $(jq '.cli_args.createFinalBulk | join(" ")' "$profile_json" --raw-output)
                )
-        cardano-cli genesis create-staked "${params[@]}"
+        time cardano-cli genesis create-staked "${params[@]}"
         mv "$dir"/genesis.json "$dir"/genesis-shelley.json
         mv "$dir"/genesis.spec.json "$dir"/genesis-shelley.spec.json
 
         msg "genesis:  removing delegator keys.."
         rm "$dir"/stake-delegator-keys -rf
 
-        cat <<<$cache_key_input               > "$dir"/cache.key.input
-        cat <<<$cache_key                     > "$dir"/cache.key
-        cat <<<$global_genesis_format_version > "$dir"/layout.version
-
         msg "genesis:  moving keys"
         ## TODO: try to get rid of this step:
-        Massage_the_key_file_layout_to_match_AWS "$profile_json" "$node_specs" "$dir";;
+        Massage_the_key_file_layout_to_match_AWS "$profile_json" "$node_specs" "$dir"
+
+        msg "genesis:  sealing"
+        cat <<<$cache_key_input               > "$dir"/cache.key.input
+        cat <<<$cache_key                     > "$dir"/cache.key
+        cat <<<$global_genesis_format_version > "$dir"/layout.version;;
 
     derive-from-cache )
         local usage="USAGE:  wb genesis $op PROFILE-OUT TIMING-JSON-EXPR CACHE-ENTRY-DIR OUTDIR"
@@ -198,10 +216,20 @@ case "$op" in
         local cache_entry=${3:?$usage}
         local outdir=${4:?$usage}
 
-        msg "genesis | derive-from-cache:  $cache_entry -> $outdir"
+        mkdir -p "$outdir"
+
+        local preset=$(profile preset "$profile"/profile.json)
+        if test -n "$preset"
+        then progress "genesis" "instantiating from preset $(with_color white $preset):  $cache_entry"
+             mkdir -p "$outdir"/byron
+             cp -f $cache_entry/genesis*.json "$outdir"
+             cp -f $cache_entry/byron/*.json  "$outdir"/byron
+             return
+        fi
+
+        progress "genesis" "deriving from cache:  $cache_entry -> $outdir"
         # ls -l $cache_entry
 
-        mkdir -p "$outdir"
         ( cd $outdir
           ln -s $profile   ./profile
           ln -s $cache_entry cache-entry
@@ -246,7 +274,7 @@ case "$op" in
         jq ' $prof[0] as $p
            | . * ($p.genesis.alonzo // {})
            ' --slurpfile prof       "$profile_json"  \
-           "$global_basedir"/profiles/presets/mainnet/genesis/genesis-alonzo.json \
+           "$global_basedir"/profiles/presets/mainnet/genesis/genesis.alonzo.json \
            >   "$dir"/genesis.alonzo.json;;
 
     * ) usage_genesis;; esac
@@ -261,7 +289,9 @@ Massage_the_key_file_layout_to_match_AWS() {
 
     set -euo pipefail
 
-    local pool_density_map=$(topology density-map "$profile_json" "$node_specs")
+    local pool_density_map=$(topology density-map "$node_specs")
+    if test -z "$pool_density_map"
+    then fatal "failed: topology density-map '$node_specs'"; fi
     msg "genesis: pool density map:  $pool_density_map"
 
     __KEY_ROOT=$dir

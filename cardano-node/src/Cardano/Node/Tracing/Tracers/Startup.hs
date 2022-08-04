@@ -86,12 +86,14 @@ getStartupInfo nc (SomeConsensusProtocol whichP pForInfo) fp = do
             let DegenLedgerConfig cfgShelley = Consensus.configLedger cfg
             in [getGenesisValues "Shelley" cfgShelley]
           CardanoBlockType ->
-            let CardanoLedgerConfig cfgByron cfgShelley cfgAllegra cfgMary cfgAlonzo = Consensus.configLedger cfg
+            let CardanoLedgerConfig cfgByron cfgShelley cfgAllegra
+                                    cfgMary cfgAlonzo cfgBabbage = Consensus.configLedger cfg
             in getGenesisValuesByron cfg cfgByron
-               : getGenesisValues "Shelley" cfgShelley
-               : getGenesisValues "Allegra" cfgAllegra
-               : getGenesisValues "Mary"    cfgMary
-               : [getGenesisValues "Alonzo"  cfgAlonzo]
+               : getGenesisValues  "Shelley" cfgShelley
+               : getGenesisValues  "Allegra" cfgAllegra
+               : getGenesisValues  "Mary"    cfgMary
+               : getGenesisValues  "Alonzo"  cfgAlonzo
+               : [getGenesisValues "Babbage" cfgBabbage]
   pure (basicInfoCommon : protocolDependentItems)
     where
       getGenesisValues era config =
@@ -121,13 +123,14 @@ getStartupInfo nc (SomeConsensusProtocol whichP pForInfo) fp = do
 
 namesStartupInfo :: StartupTrace blk -> [Text]
 namesStartupInfo = \case
-  StartupInfo {}                            -> ["StartupInfo"]
-  StartupP2PInfo {}                         -> ["StartupP2PInfo"]
-  StartupTime {}                            -> ["StartupTime"]
-  StartupNetworkMagic {}                    -> ["StartupNetworkMagic"]
-  StartupSocketConfigError {}               -> ["StartupSocketConfigError"]
-  StartupDBValidation {}                    -> ["StartupDBValidation"]
+  StartupInfo {}                            -> ["Info"]
+  StartupP2PInfo {}                         -> ["P2PInfo"]
+  StartupTime {}                            -> ["Time"]
+  StartupNetworkMagic {}                    -> ["NetworkMagic"]
+  StartupSocketConfigError {}               -> ["SocketConfigError"]
+  StartupDBValidation {}                    -> ["DBValidation"]
   NetworkConfigUpdate {}                    -> ["NetworkConfigUpdate"]
+  NetworkConfigUpdateUnsupported            -> ["NetworkConfigUpdateUnsupported"]
   NetworkConfigUpdateError {}               -> ["NetworkConfigUpdateError"]
   NetworkConfig {}                          -> ["NetworkConfig"]
   P2PWarning {}                             -> ["P2PWarning"]
@@ -196,7 +199,10 @@ instance ( Show (BlockNodeToNodeVersion blk)
                , "message" .= String "start db validation" ]
   forMachine _dtal NetworkConfigUpdate =
       mconcat [ "kind" .= String "NetworkConfigUpdate"
-               , "message" .= String "ntework configuration update" ]
+               , "message" .= String "network configuration update" ]
+  forMachine _dtal NetworkConfigUpdateUnsupported =
+      mconcat [ "kind" .= String "NetworkConfigUpdate"
+              , "message" .= String "network topology reconfiguration is not supported in non-p2p mode" ]
   forMachine _dtal (NetworkConfigUpdateError err) =
       mconcat [ "kind" .= String "NetworkConfigUpdateError"
                , "error" .= String err ]
@@ -297,6 +303,8 @@ ppStartupInfoTrace (StartupSocketConfigError err) =
 ppStartupInfoTrace StartupDBValidation = "Performing DB validation"
 
 ppStartupInfoTrace NetworkConfigUpdate = "Performing topology configuration update"
+ppStartupInfoTrace NetworkConfigUpdateUnsupported =
+  "Network topology reconfiguration is not supported in non-p2p mode"
 ppStartupInfoTrace (NetworkConfigUpdateError err) = err
 ppStartupInfoTrace (NetworkConfig localRoots publicRoots useLedgerAfter) =
     pack
@@ -361,27 +369,27 @@ p2pWarningDevelopmentNetworkProtocolsMessage =
 docStartupInfo :: Documented (StartupTrace blk)
 docStartupInfo = Documented [
     DocMsg
-      ["StartupInfo"]
+      ["Info"]
       []
       ""
   , DocMsg
-      ["StartupP2PInfo"]
+      ["P2PInfo"]
       []
       ""
   , DocMsg
-      ["StartupTime"]
+      ["Time"]
       []
       ""
   , DocMsg
-      ["StartupNetworkMagic"]
+      ["NetworkMagic"]
       []
       ""
   , DocMsg
-      ["StartupSocketConfigError"]
+      ["SocketConfigError"]
       []
       ""
   , DocMsg
-      ["StartupDBValidation"]
+      ["DBValidation"]
       []
       ""
   , DocMsg

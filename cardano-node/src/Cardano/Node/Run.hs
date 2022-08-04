@@ -3,10 +3,10 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PackageImports #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 #if !defined(mingw32_HOST_OS)
@@ -63,6 +63,7 @@ import           Cardano.Node.Configuration.POM (NodeConfiguration (..),
                    defaultPartialNodeConfiguration, makeNodeConfiguration, parseNodeConfigurationFP)
 import           Cardano.Node.Startup
 import           Cardano.Node.Tracing.API
+import           Cardano.Node.Tracing.StateRep (NodeState(NodeKernelOnline))
 import           Cardano.Node.Tracing.Tracers.Startup (getStartupInfo)
 import           Cardano.Node.Types
 import           Cardano.Tracing.Config (TraceOptions (..), TraceSelection (..))
@@ -181,7 +182,7 @@ handleNodeWithTracers
   -> NetworkMagic
   -> Protocol.ProtocolInfoArgs IO blk
   -> IO ()
-handleNodeWithTracers  cmdPc nc p networkMagic runP = do
+handleNodeWithTracers cmdPc nc p networkMagic runP = do
   -- This IORef contains node kernel structure which holds node kernel.
   -- Used for ledger queries and peer connection status.
   nodeKernelData <- mkNodeKernelData
@@ -191,58 +192,80 @@ handleNodeWithTracers  cmdPc nc p networkMagic runP = do
       let fp = maybe  "No file path found!"
                       unConfigPath
                       (getLast (pncConfigFile cmdPc))
-      (tracers, mLoggingLayer) <-
-        case ncTraceConfig nc of
-          TraceDispatcher{} -> do
-            (, Nothing) <$>
-              initTraceDispatcher
-                nc
-                p
-                networkMagic
-                nodeKernelData
-                p2pMode
-          _ -> do
-            eLoggingLayer <- runExceptT $ createLoggingLayer
-              (Text.pack (showVersion version))
+      case ncTraceConfig nc of
+        TraceDispatcher{} -> do
+          tracers <-
+            initTraceDispatcher
               nc
               p
+              networkMagic
+              nodeKernelData
+              p2pMode
 
-            loggingLayer <- case eLoggingLayer of
-              Left err  -> putTextLn (Text.pack $ show err) >> exitFailure
-              Right res -> return res
-            !trace <- setupTrace loggingLayer
-            let tracer = contramap pack $ toLogObject trace
-            logTracingVerbosity nc tracer
+          startupInfo <- getStartupInfo nc p fp
+          mapM_ (traceWith $ startupTracer tracers) startupInfo
+          traceNodeStartupInfo (nodeStartupInfoTracer tracers) startupInfo
 
-            -- Legacy logging infrastructure must trace 'nodeStartTime' and 'nodeBasicInfo'.
-            startTime <- getCurrentTime
-            traceCounter "nodeStartTime" trace (ceiling $ utcTimeToPOSIXSeconds startTime)
-            nbi <- nodeBasicInfo nc p startTime
-            forM_ nbi $ \(LogObject nm mt content) ->
-              traceNamedObject (appendName nm trace) (mt, content)
+          handleSimpleNode runP p2pMode tracers nc
+            (\nk -> do
+                setNodeKernel nodeKernelData nk
+                traceWith (nodeStateTracer tracers) NodeKernelOnline)
 
-            (,Just loggingLayer) <$>
-              mkTracers
-                (Consensus.configBlock cfg)
-                (ncTraceConfig nc)
-                trace
-                nodeKernelData
-                (llEKGDirect loggingLayer)
-                p2pMode
+        _ -> do
+          eLoggingLayer <- runExceptT $ createLoggingLayer
+            (Text.pack (showVersion version))
+            nc
+            p
 
-      getStartupInfo nc p fp
-        >>= mapM_ (traceWith $ startupTracer tracers)
+          loggingLayer <- case eLoggingLayer of
+            Left err  -> putTextLn (Text.pack $ show err) >> exitFailure
+            Right res -> return res
+          !trace <- setupTrace loggingLayer
+          let tracer = contramap pack $ toLogObject trace
+          logTracingVerbosity nc tracer
 
-      Async.withAsync (handlePeersListSimple (error "Implement Tracer IO [Peer blk]") nodeKernelData)
-          $ \_peerLoggingThread ->
-            -- We ignore peer logging thread if it dies, but it will be killed
-            -- when 'handleSimpleNode' terminates.
-                handleSimpleNode runP p2pMode tracers nc
-                  (setNodeKernel nodeKernelData)
-                `finally`
-                forM_ mLoggingLayer
-                  shutdownLoggingLayer
+          -- Legacy logging infrastructure must trace 'nodeStartTime' and 'nodeBasicInfo'.
+          startTime <- getCurrentTime
+          traceCounter "nodeStartTime" trace (ceiling $ utcTimeToPOSIXSeconds startTime)
+          nbi <- nodeBasicInfo nc p startTime
+          forM_ nbi $ \(LogObject nm mt content) ->
+            traceNamedObject (appendName nm trace) (mt, content)
 
+          tracers <-
+            mkTracers
+              (Consensus.configBlock cfg)
+              (ncTraceConfig nc)
+              trace
+              nodeKernelData
+              (llEKGDirect loggingLayer)
+              p2pMode
+
+          getStartupInfo nc p fp
+            >>= mapM_ (traceWith $ startupTracer tracers)
+
+          Async.withAsync (handlePeersListSimple (error "Implement Tracer IO [Peer blk]") nodeKernelData)
+              $ \_peerLoggingThread ->
+                -- We ignore peer logging thread if it dies, but it will be killed
+                -- when 'handleSimpleNode' terminates.
+                    handleSimpleNode runP p2pMode tracers nc
+                      (\nk -> do
+                          setNodeKernel nodeKernelData nk
+                          traceWith (nodeStateTracer tracers) NodeKernelOnline)
+                    `finally`
+                    forM_ eLoggingLayer
+                      shutdownLoggingLayer
+
+-- | Currently, we trace only 'ShelleyBased'-info which will be asked
+--   by 'cardano-tracer' service as a datapoint. It can be extended in the future.
+traceNodeStartupInfo
+  :: Tracer IO NodeStartupInfo
+  -> [StartupTrace blk]
+  -> IO ()
+traceNodeStartupInfo t startupTrace =
+  forM_ startupTrace $ \case
+    BIShelley (BasicInfoShelleyBased era _ sl el spkp) ->
+      traceWith t $ NodeStartupInfo era sl el spkp
+    _ -> return ()
 
 logTracingVerbosity :: NodeConfiguration -> Tracer IO String -> IO ()
 logTracingVerbosity nc tracer =
@@ -420,6 +443,14 @@ handleSimpleNode runP p2pMode tracers nc onKernel = do
               , srnMaybeMempoolCapacityOverride = ncMaybeMempoolCapacityOverride nc
               }
       DisabledP2PMode -> do
+#ifdef UNIX
+        _ <- Signals.installHandler
+              Signals.sigHUP
+              (Signals.Catch $ do
+                traceWith (startupTracer tracers) NetworkConfigUpdateUnsupported
+              )
+              Nothing
+#endif
         eitherTopology <- TopologyNonP2P.readTopologyFile nc
         nt <- either (\err -> panic $ "Cardano.Node.Run.handleSimpleNodeNonP2P.readTopologyFile: " <> err) pure eitherTopology
         let (ipProducerAddrs, dnsProducerAddrs) = producerAddressesNonP2P nt

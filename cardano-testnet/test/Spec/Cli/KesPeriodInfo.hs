@@ -25,7 +25,6 @@ import           GHC.Stack (callStack)
 import qualified System.Directory as IO
 import           System.Environment (getEnvironment)
 import           System.FilePath ((</>))
-import           System.Info (os)
 
 import           Cardano.CLI.Shelley.Output
 import           Cardano.CLI.Shelley.Run.Query
@@ -40,17 +39,15 @@ import qualified Hedgehog.Extras.Test.Process as H
 import qualified System.Info as SYS
 import qualified Test.Base as H
 import qualified Test.Process as H
-import           Testnet.Cardano (TestnetOptions (..), TestnetRuntime (..), defaultTestnetOptions, defaultTestnetNodeOptions,
-                   testnet)
+import qualified Test.Runtime as TR
 import qualified Testnet.Cardano as TC
-import           Testnet.Conf (ProjectBase (..), YamlFilePath (..))
+import           Testnet.Cardano (TestnetOptions (..), TestnetRuntime (..),
+                   defaultTestnetNodeOptions, defaultTestnetOptions, testnet)
 import qualified Testnet.Conf as H
+import           Testnet.Conf (ProjectBase (..), YamlFilePath (..))
 import           Testnet.Utils (waitUntilEpoch)
 
 import           Testnet.Properties.Cli.KesPeriodInfo
-
-isLinux :: Bool
-isLinux = os == "linux"
 
 hprop_kes_period_info :: Property
 hprop_kes_period_info = H.integration . H.runFinallies . H.workspace "chairman" $ \tempAbsBasePath' -> do
@@ -70,7 +67,7 @@ hprop_kes_period_info = H.integration . H.runFinallies . H.workspace "chairman" 
                              , activeSlotsCoeff = 0.1
                              }
   runTime@TC.TestnetRuntime { testnetMagic } <- testnet fastTestnetOptions conf
-  let sprockets = TC.bftSprockets runTime
+  let sprockets = TR.bftSprockets runTime
   env <- H.evalIO getEnvironment
 
   execConfig <- H.noteShow H.ExecConfig
@@ -192,7 +189,7 @@ hprop_kes_period_info = H.integration . H.runFinallies . H.workspace "chairman" 
                ]
 
   -- Things take long on non-linux machines
-  if isLinux
+  if H.isLinux
   then H.threadDelay 5000000
   else H.threadDelay 10000000
 
@@ -340,7 +337,7 @@ hprop_kes_period_info = H.integration . H.runFinallies . H.workspace "chairman" 
     , "--testnet-magic", show @Int testnetMagic
     ]
 
-  if isLinux
+  if H.isLinux
   then H.threadDelay 5000000
   else H.threadDelay 20000000
 

@@ -26,6 +26,7 @@ case "$op" in
 
         setenvjq    'port_shift_ekg'        100
         setenvjq    'port_shift_prometheus' 200
+        setenvjq    'port_shift_rtview'     300
         setenvjqstr 'supervisor_conf'      "$profile_dir"/supervisor.conf
         ;;
 
@@ -51,46 +52,119 @@ case "$op" in
         local basePort=$(                   envjq 'basePort')
         local port_ekg=$((       basePort+$(envjq 'port_shift_ekg')))
         local port_prometheus=$((basePort+$(envjq 'port_shift_prometheus')))
+        local port_rtview=$((    basePort+$(envjq 'port_shift_rtview')))
 
         cat <<EOF
+  - RTView URL:              http://localhost:$port_rtview
   - EKG URL (node-0):        http://localhost:$port_ekg/
   - Prometheus URL (node-0): http://localhost:$port_prometheus/metrics
 EOF
         ;;
 
-    start-cluster )
-        local usage="USAGE: wb supervisor $op RUN-DIR"
+    start-node )
+        local usage="USAGE: wb supervisor $op RUN-DIR NODE-NAME"
         local dir=${1:?$usage}; shift
+        local node=${1:?$usage}; shift
 
-        supervisord --config  "$dir"/supervisor/supervisord.conf $@
+        supervisorctl      start                  $node
+        backend_supervisor wait-node       "$dir" $node
+        backend_supervisor save-child-pids "$dir"
+        ;;
 
-        if test ! -v CARDANO_NODE_SOCKET_PATH
-        then export  CARDANO_NODE_SOCKET_PATH=$(backend_supervisor get-node-socket-path "$dir")
-        fi
+    stop-node )
+        local usage="USAGE: wb supervisor $op RUN-DIR NODE-NAME"
+        local dir=${1:?$usage}; shift
+        local node=${1:?$usage}; shift
+
+        supervisorctl stop $node
+        ;;
+
+    wait-node )
+        local usage="USAGE: wb supervisor $op RUN-DIR [NODE-NAME]"
+        local dir=${1:?$usage}; shift
+        local node=${1:-$(dirname $CARDANO_NODE_SOCKET_PATH | xargs basename)}; shift
+        local socket=$(backend_supervisor get-node-socket-path "$dir" $node)
 
         local patience=$(jq '.analysis.cluster_startup_overhead_s | ceil' $dir/profile.json) i=0
-        echo -n "workbench:  supervisor:  waiting ${patience}s for $CARDANO_NODE_SOCKET_PATH to appear: " >&2
-        while test ! -S $CARDANO_NODE_SOCKET_PATH
+        echo -n "workbench:  supervisor:  waiting ${patience}s for socket of $node: " >&2
+        while test ! -S $socket
         do printf "%3d" $i; sleep 1
            i=$((i+1))
            if test $i -ge $patience
            then echo
-                msg "FATAL:  workbench:  supervisor:  patience ran out after ${patience}s"
+                progress "supervisor" "$(red FATAL):  workbench:  supervisor:  patience ran out for $(white $node) after ${patience}s, socket $socket"
                 backend_supervisor stop-cluster "$dir"
-                fatal "node startup did not succeed:  check logs in $dir/node-0/stdout"
+                fatal "$node startup did not succeed:  check logs in $(dirname $socket)/stdout & stderr"
            fi
            echo -ne "\b\b\b"
         done >&2
-        echo " node-0 online after $i seconds" >&2
+        echo " $node up (${i}s)" >&2
+        ;;
+
+    start-nodes )
+        local usage="USAGE: wb supervisor $op RUN-DIR [HONOR_AUTOSTART=]"
+        local dir=${1:?$usage}; shift
+        local honor_autostart=${1:-}
+
+        local nodes=($(jq_tolist keys "$dir"/node-specs.json))
+
+        if test -n "$honor_autostart"
+        then for node in ${nodes[*]}
+             do jqtest ".\"$node\".autostart" "$dir"/node-specs.json &&
+                     supervisorctl start $node; done;
+        else supervisorctl start ${nodes[*]}; fi
+
+        for node in ${nodes[*]}
+        do jqtest ".\"$node\".autostart" "$dir"/node-specs.json &&
+                backend_supervisor wait-node "$dir" $node; done
+
+        if test ! -v CARDANO_NODE_SOCKET_PATH
+        then export  CARDANO_NODE_SOCKET_PATH=$(backend_supervisor get-node-socket-path "$dir" 'node-0')
+        fi
 
         backend_supervisor save-child-pids "$dir"
-        backend_supervisor save-pid-maps "$dir";;
+        backend_supervisor save-pid-maps   "$dir"
+        ;;
+
+    start )
+        local usage="USAGE: wb supervisor $op RUN-DIR"
+        local dir=${1:?$usage}; shift
+
+        if ! supervisord --config  "$dir"/supervisor/supervisord.conf $@
+        then progress "supervisor" "$(red fatal: failed to start) $(white supervisord)"
+             echo "$(red supervisord.conf) --------------------------------" >&2
+             cat "$dir"/supervisor/supervisord.conf
+             echo "$(red supervisord.log) ---------------------------------" >&2
+             cat "$dir"/supervisor/supervisord.log
+             echo "$(white -------------------------------------------------)" >&2
+             fatal "could not start $(white supervisord)"
+        fi
+
+        if jqtest ".node.tracer" "$dir"/profile.json
+        then if ! supervisorctl start tracer
+             then progress "supervisor" "$(red fatal: failed to start) $(white cardano-tracer)"
+                  echo "$(red tracer-config.json) ------------------------------" >&2
+                  cat "$dir"/tracer/tracer-config.json
+                  echo "$(red tracer stdout) -----------------------------------" >&2
+                  cat "$dir"/tracer/stdout
+                  echo "$(red tracer stderr) -----------------------------------" >&2
+                  cat "$dir"/tracer/stderr
+                  echo "$(white -------------------------------------------------)" >&2
+                  fatal "could not start $(white cardano-tracer)"
+             fi
+
+             progress_ne "supervisor" "waiting for $(yellow cardano-tracer) to create socket: "
+             while test ! -e "$dir"/tracer/tracer.socket; do sleep 1; done
+             echo $(green ' OK') >&2
+             backend_supervisor save-child-pids "$dir"
+        fi;;
 
     get-node-socket-path )
-        local usage="USAGE: wb supervisor $op STATE-DIR"
+        local usage="USAGE: wb supervisor $op STATE-DIR NODE-NAME"
         local state_dir=${1:?$usage}
+        local node_name=${2:?$usage}
 
-        echo -n $state_dir/node-0/node.socket
+        echo -n $state_dir/$node_name/node.socket
         ;;
 
     start-generator )
@@ -102,32 +176,58 @@ EOF
                --* ) msg "FATAL:  unknown flag '$1'"; usage_supervisor;;
                * ) break;; esac; shift; done
 
-        supervisorctl start generator
+        if ! supervisorctl start generator
+        then progress "supervisor" "$(red fatal: failed to start) $(white generator)"
+             echo "$(red generator.json) ------------------------------" >&2
+             cat "$dir"/tracer/tracer-config.json
+             echo "$(red tracer stdout) -----------------------------------" >&2
+             cat "$dir"/tracer/stdout
+             echo "$(red tracer stderr) -----------------------------------" >&2
+             cat "$dir"/tracer/stderr
+             echo "$(white -------------------------------------------------)" >&2
+             fatal "could not start $(white supervisord)"
+        fi
         backend_supervisor save-child-pids "$dir";;
+
+    wait-node-stopped )
+        local usage="USAGE: wb supervisor $op RUN-DIR NODE"
+        local dir=${1:?$usage}; shift
+        local node=${1:?$usage}; shift
+
+        progress_ne "supervisor" "waiting until $node stops:  ....."
+        local i=0
+        while supervisorctl status $node > /dev/null
+        do echo -ne "\b\b\b\b\b"; printf "%5d" $i >&2; i=$((i+1)); sleep 1
+        done >&2
+        echo -e "\b\b\b\b\bdone, after $(with_color white $i) seconds" >&2
+        ;;
 
     wait-pools-stopped )
         local usage="USAGE: wb supervisor $op RUN-DIR"
         local dir=${1:?$usage}; shift
 
-        local i=0 pools=$(jq .composition.n_pool_hosts $dir/profile.json)
+        local i=0 pools=$(jq .composition.n_pool_hosts $dir/profile.json) start_time=$(date +%s)
         msg_ne "supervisor:  waiting until all pool nodes are stopped: 000000"
         touch $dir/flag/cluster-termination
+
         for ((pool_ix=0; pool_ix < $pools; pool_ix++))
         do while supervisorctl status node-${pool_ix} > /dev/null &&
                    test -f $dir/flag/cluster-termination
-           do echo -ne "\b\b\b\b\b\b"; printf "%6d" $i;          i=$((i+1)); sleep 1; done
+           do echo -ne "\b\b\b\b\b\b"; printf "%6d" $((i + 1)); i=$((i+1)); sleep 1; done
               echo -ne "\b\b\b\b\b\b"; echo -n "node-${pool_ix} 000000"
         done >&2
+        echo -ne "\b\b\b\b\b\b"
+        local elapsed=$(($(date +%s) - start_time))
         if test -f $dir/flag/cluster-termination
-        then echo " done." >&2
-        else echo " termination requested." >&2; fi
+        then echo " All nodes exited -- after $(yellow $elapsed)s" >&2
+        else echo " Termination requested -- after $(yellow $elapsed)s" >&2; fi
         ;;
 
     stop-cluster )
         local usage="USAGE: wb supervisor $op RUN-DIR"
         local dir=${1:?$usage}; shift
 
-        supervisorctl stop all
+        supervisorctl stop all || true
 
         if test -f "${dir}/supervisor/supervisord.pid"
         then kill $(<${dir}/supervisor/supervisord.pid) $(<${dir}/supervisor/child.pids) 2>/dev/null
@@ -152,9 +252,9 @@ EOF
         pstree -p "$(cat "$svpid")" > "$pstree"
 
         local pidsfile="$dir"/supervisor/child.pids
-        { grep '\\---\|--=' "$pstree" || true; } |
-            sed 's/^.*\\--- \([0-9]*\) .*/\1/; s/^[ ]*[^ ]* \([0-9]+\) .*/\1/
-                ' > "$pidsfile"
+        { grep -e '---\|--=' "$pstree" || true; } |
+          sed 's/^.*--[=-] \([0-9]*\) .*/\1/; s/^[ ]*[^ ]* \([0-9]+\) .*/\1/
+              ' > "$pidsfile"
         ;;
 
     save-pid-maps )
@@ -164,13 +264,24 @@ EOF
         local mapn2p=$dir/supervisor/node2pid.map; echo '{}' > "$mapn2p"
         local mapp2n=$dir/supervisor/pid2node.map; echo '{}' > "$mapp2n"
         local pstree=$dir/supervisor/ps.tree
+
         for node in $(jq_tolist keys "$dir"/node-specs.json)
-        do local service_pid=$(supervisorctl pid $node)
-           if test -z "$(ps h --ppid $service_pid)"
-           then local pid=$service_pid
-           else local pid=$(fgrep -e "= $(printf %05d $service_pid) " -A1 "$pstree" |
-                                tail -n1 | sed 's/^.*\\--- \([0-9]*\) .*/\1/; s/^[ ]*[^ ]* \([0-9]*\) .*/\1/')
+        do ## supervisord's service PID is the immediately invoked binary,
+           ## ..which isn't necessarily 'cardano-node', but could be 'time' or 'cabal' or..
+           local service_pid=$(supervisorctl pid $node)
+           if   test $service_pid = '0'
+           then continue
+           elif test -z "$(ps h --ppid $service_pid)" ## Any children?
+           then local pid=$service_pid ## <-=^^^ none, in case we're running executables directly.
+                ## ..otherwise, it's a chain of children, e.g.: time -> cabal -> cardano-node
+           else local pid=$(grep -e "[=-] $(printf %05d $service_pid) " -A5 "$pstree" |
+                            grep -e '---\|--=' |
+                            head -n1 |
+                            sed 's/^.*--[=-] \([0-9]*\) .*/\1/;
+                                 s/^[ ]*[^ ]* \([0-9]*\) .*/\1/')
            fi
+           if test -z "$pid"
+           then warn "supervisor" "failed to detect PID of $(white $node)"; fi
            jq_fmutate "$mapn2p" '. * { "'$node'": '$pid' }'
            jq_fmutate "$mapp2n" '. * { "'$pid'": "'$node'" }'
         done

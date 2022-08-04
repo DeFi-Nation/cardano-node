@@ -17,6 +17,7 @@ module Cardano.Api (
     AllegraEra,
     MaryEra,
     AlonzoEra,
+    BabbageEra,
     CardanoEra(..),
     IsCardanoEra(..),
     AnyCardanoEra(..),
@@ -41,18 +42,13 @@ module Cardano.Api (
     AsType(..),
     -- * Cryptographic key interface
     -- $keys
-    Key,
-    VerificationKey,
+    Key(..),
     SigningKey(..),
-    getVerificationKey,
-    verificationKeyHash,
+    VerificationKey(..),
     castVerificationKey,
     castSigningKey,
-
-    -- ** Generating keys
     generateSigningKey,
-    deterministicSigningKey,
-    deterministicSigningKeySeedSize,
+    generateInsecureSigningKey,
 
     -- ** Hashes
     -- | In Cardano most keys are identified by their hash, and hashes are
@@ -116,6 +112,7 @@ module Cardano.Api (
     AssetId(..),
     Value,
     parseValue,
+    policyId,
     selectAsset,
     valueFromList,
     valueToList,
@@ -550,6 +547,8 @@ module Cardano.Api (
     ConsensusModeIsMultiEra(..),
     AnyConsensusModeParams(..),
     ConsensusModeParams(..),
+    ConsensusProtocol,
+    ChainDepStateProtocol,
     ConsensusBlockForMode,
     ConsensusBlockForEra,
     EraInMode(..),
@@ -665,24 +664,27 @@ module Cardano.Api (
     chainPointToHeaderHash,
     makeChainTip,
     parseFilePath,
-    writeSecrets
+    writeSecrets,
 
+    -- ** Cast functions
+    EraCast (..),
+    EraCastError (..),
   ) where
 
 import           Cardano.Api.Address
 import           Cardano.Api.Block
 import           Cardano.Api.Certificate
+import           Cardano.Api.EraCast
 import           Cardano.Api.Eras
 import           Cardano.Api.Error
 import           Cardano.Api.Fees
 import           Cardano.Api.GenesisParameters
-import           Cardano.Api.HasTypeProxy
 import           Cardano.Api.Hash
+import           Cardano.Api.HasTypeProxy
 import           Cardano.Api.IPC
 import           Cardano.Api.IPC.Monad
 import           Cardano.Api.Key
 import           Cardano.Api.KeysByron
-import           Cardano.Api.KeysPraos
 import           Cardano.Api.KeysShelley
 import           Cardano.Api.LedgerEvent
 import           Cardano.Api.LedgerState

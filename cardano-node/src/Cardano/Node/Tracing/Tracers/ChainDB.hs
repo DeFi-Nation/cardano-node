@@ -49,6 +49,7 @@ import qualified Ouroboros.Consensus.Storage.LedgerDB.Types as LedgerDB
 import qualified Ouroboros.Consensus.Storage.VolatileDB as VolDB
 import qualified Ouroboros.Consensus.Storage.VolatileDB.Impl as VolDb
 import           Ouroboros.Consensus.Util.Condense (condense)
+import           Ouroboros.Consensus.Util.Enclose
 
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Ouroboros.Network.AnchoredFragment as AF
@@ -181,16 +182,16 @@ docChainDBTraceEvent = addDocumentedNamespace [] docChainDBTraceEvent'
 docChainDBTraceEvent' :: Documented (ChainDB.TraceEvent blk)
 docChainDBTraceEvent' =
     addDocumentedNamespace ["AddBlockEvent"] docChainDBAddBlock
-    `addDocs` addDocumentedNamespace ["TraceFollowerEvent"] docChainDBFollower
-    `addDocs` addDocumentedNamespace ["TraceCopyToImmutableDBEvent"] docChainDBImmtable
-    `addDocs` addDocumentedNamespace ["TraceGCEvent"] docChainDBGCEvent
-    `addDocs` addDocumentedNamespace ["TraceInitChainSelEvent"] docChainDBInitChainSel
-    `addDocs` addDocumentedNamespace ["TraceOpenEvent"] docChainDBOpenEvent
-    `addDocs` addDocumentedNamespace ["TraceIteratorEvent"] docChainDBIteratorEvent
-    `addDocs` addDocumentedNamespace ["TraceLedgerEvent"] docChainDBLedgerEvent
-    `addDocs` addDocumentedNamespace ["TraceLedgerReplayEvent"] docChainDBLedgerReplayEvent
-    `addDocs` addDocumentedNamespace ["TraceImmutableDBEvent"] docChainDBImmutableDBEvent
-    `addDocs` addDocumentedNamespace ["TraceVolatileDBEvent"] docChainDBVolatileDBEvent
+    `addDocs` addDocumentedNamespace ["FollowerEvent"] docChainDBFollower
+    `addDocs` addDocumentedNamespace ["CopyToImmutableDBEvent"] docChainDBImmtable
+    `addDocs` addDocumentedNamespace ["GCEvent"] docChainDBGCEvent
+    `addDocs` addDocumentedNamespace ["InitChainSelEvent"] docChainDBInitChainSel
+    `addDocs` addDocumentedNamespace ["OpenEvent"] docChainDBOpenEvent
+    `addDocs` addDocumentedNamespace ["IteratorEvent"] docChainDBIteratorEvent
+    `addDocs` addDocumentedNamespace ["LedgerEvent"] docChainDBLedgerEvent
+    `addDocs` addDocumentedNamespace ["LedgerReplayEvent"] docChainDBLedgerReplayEvent
+    `addDocs` addDocumentedNamespace ["ImmutableDBEvent"] docChainDBImmutableDBEvent
+    `addDocs` addDocumentedNamespace ["VolatileDBEvent"] docChainDBVolatileDBEvent
 
 --------------------------------------------------------------------------------
 -- AddBlockEvent
@@ -203,15 +204,18 @@ sevTraceAddBlockEvent ChainDB.IgnoreInvalidBlock {} = Info
 sevTraceAddBlockEvent ChainDB.AddedBlockToQueue {} = Debug
 sevTraceAddBlockEvent ChainDB.BlockInTheFuture {} = Info
 sevTraceAddBlockEvent ChainDB.AddedBlockToVolatileDB {} = Debug
+sevTraceAddBlockEvent ChainDB.PoppedBlockFromQueue {} = Debug
 sevTraceAddBlockEvent ChainDB.TryAddToCurrentChain {} = Debug
 sevTraceAddBlockEvent ChainDB.TrySwitchToAFork {} = Info
 sevTraceAddBlockEvent ChainDB.StoreButDontChange {} = Debug
+sevTraceAddBlockEvent ChainDB.ChangingSelection {} = Debug
 sevTraceAddBlockEvent (ChainDB.AddedToCurrentChain events _ _ _) =
       maximumDef Notice (map sevLedgerEvent events)
 sevTraceAddBlockEvent (ChainDB.SwitchedToAFork events _ _ _) =
       maximumDef Notice (map sevLedgerEvent events)
 sevTraceAddBlockEvent (ChainDB.AddBlockValidation ev') = sevTraceValidationEvent ev'
 sevTraceAddBlockEvent ChainDB.ChainSelectionForFutureBlock{} = Debug
+sevTraceAddBlockEvent ChainDB.PipeliningEvent{} = Debug
 
 sevLedgerEvent :: LedgerEvent blk -> SeverityS
 sevLedgerEvent (LedgerUpdate _)  = Notice
@@ -233,6 +237,8 @@ namesForChainDBAddBlock (ChainDB.IgnoreInvalidBlock {}) =
       ["IgnoreInvalidBlock"]
 namesForChainDBAddBlock (ChainDB.AddedBlockToQueue {}) =
       ["AddedBlockToQueue"]
+namesForChainDBAddBlock (ChainDB.PoppedBlockFromQueue {}) =
+      ["PoppedBlockFromQueue"]
 namesForChainDBAddBlock (ChainDB.BlockInTheFuture {}) =
       ["BlockInTheFuture"]
 namesForChainDBAddBlock (ChainDB.AddedBlockToVolatileDB {}) =
@@ -247,10 +253,17 @@ namesForChainDBAddBlock (ChainDB.AddedToCurrentChain {}) =
       ["AddedToCurrentChain"]
 namesForChainDBAddBlock (ChainDB.SwitchedToAFork {}) =
       ["SwitchedToAFork"]
+namesForChainDBAddBlock (ChainDB.ChangingSelection {}) =
+      ["ChangingSelection"]
 namesForChainDBAddBlock (ChainDB.AddBlockValidation ev') =
       "AddBlockValidation" : namesForChainDBAddBlockValidation ev'
 namesForChainDBAddBlock (ChainDB.ChainSelectionForFutureBlock {}) =
       ["ChainSelectionForFutureBlock"]
+namesForChainDBAddBlock (ChainDB.PipeliningEvent ev) =
+      "PipeliningEvent" : case ev of
+        ChainDB.SetTentativeHeader{}      -> ["SetTentativeHeader"]
+        ChainDB.TrapTentativeHeader{}     -> ["TrapTentativeHeader"]
+        ChainDB.OutdatedTentativeHeader{} -> ["OutdatedTentativeHeader"]
 
 namesForChainDBAddBlockValidation :: ChainDB.TraceValidationEvent blk -> [Text]
 namesForChainDBAddBlockValidation (ChainDB.ValidCandidate {}) =
@@ -279,8 +292,18 @@ instance ( LogFormatting (Header blk)
       "Ignoring block already in DB: " <> renderRealPointAsPhrase pt
   forHuman (ChainDB.IgnoreInvalidBlock pt _reason) =
       "Ignoring previously seen invalid block: " <> renderRealPointAsPhrase pt
-  forHuman (ChainDB.AddedBlockToQueue pt sz) =
-      "Block added to queue: " <> renderRealPointAsPhrase pt <> " queue size " <> condenseT sz
+  forHuman (ChainDB.AddedBlockToQueue pt edgeSz) =
+      case edgeSz of
+        RisingEdge ->
+          "About to add block to queue: " <> renderRealPointAsPhrase pt
+        FallingEdgeWith sz ->
+          "Block added to queue: " <> renderRealPointAsPhrase pt <> ", queue size " <> condenseT sz
+  forHuman (ChainDB.PoppedBlockFromQueue edgePt) =
+      case edgePt of
+        RisingEdge ->
+          "Popping block from queue"
+        FallingEdgeWith pt ->
+          "Popped block from queue: " <> renderRealPointAsPhrase pt
   forHuman (ChainDB.BlockInTheFuture pt slot) =
       "Ignoring block from future: " <> renderRealPointAsPhrase pt <> ", slot " <> condenseT slot
   forHuman (ChainDB.StoreButDontChange pt) =
@@ -289,6 +312,8 @@ instance ( LogFormatting (Header blk)
       "Block fits onto the current chain: " <> renderRealPointAsPhrase pt
   forHuman (ChainDB.TrySwitchToAFork pt _) =
       "Block fits onto some fork: " <> renderRealPointAsPhrase pt
+  forHuman (ChainDB.ChangingSelection pt) =
+      "Changing selection to: " <> renderPointAsPhrase pt
   forHuman (ChainDB.AddedToCurrentChain es _ _ c) =
       "Chain extended, new tip: " <> renderPointAsPhrase (AF.headPoint c) <>
         Text.concat [ "\nEvent: " <> showT e | e <- es ]
@@ -296,11 +321,13 @@ instance ( LogFormatting (Header blk)
       "Switched to a fork, new tip: " <> renderPointAsPhrase (AF.headPoint c) <>
         Text.concat [ "\nEvent: " <> showT e | e <- es ]
   forHuman (ChainDB.AddBlockValidation ev') = forHuman ev'
-  forHuman (ChainDB.AddedBlockToVolatileDB pt _ _) =
-      "Chain added block " <> renderRealPointAsPhrase pt
+  forHuman (ChainDB.AddedBlockToVolatileDB pt _ _ enclosing) =
+      case enclosing of
+        RisingEdge  -> "Chain about to add block " <> renderRealPointAsPhrase pt
+        FallingEdge -> "Chain added block " <> renderRealPointAsPhrase pt
   forHuman (ChainDB.ChainSelectionForFutureBlock pt) =
       "Chain selection run for block previously from future: " <> renderRealPointAsPhrase pt
-
+  forHuman (ChainDB.PipeliningEvent ev') = forHuman ev'
   forMachine dtal (ChainDB.IgnoreBlockOlderThanK pt) =
       mconcat [ "kind" .= String "IgnoreBlockOlderThanK"
                , "block" .= forMachine dtal pt ]
@@ -311,10 +338,17 @@ instance ( LogFormatting (Header blk)
       mconcat [ "kind" .= String "IgnoreInvalidBlock"
                , "block" .= forMachine dtal pt
                , "reason" .= showT reason ]
-  forMachine dtal (ChainDB.AddedBlockToQueue pt sz) =
+  forMachine dtal (ChainDB.AddedBlockToQueue pt edgeSz) =
       mconcat [ "kind" .= String "AddedBlockToQueue"
                , "block" .= forMachine dtal pt
-               , "queueSize" .= toJSON sz ]
+               , case edgeSz of
+                   RisingEdge         -> "risingEdge" .= True
+                   FallingEdgeWith sz -> "queueSize" .= toJSON sz ]
+  forMachine dtal (ChainDB.PoppedBlockFromQueue edgePt) =
+      mconcat [ "kind" .= String "TraceAddBlockEvent.PoppedBlockFromQueue"
+               , case edgePt of
+                   RisingEdge         -> "risingEdge" .= True
+                   FallingEdgeWith pt -> "block" .= forMachine dtal pt ]
   forMachine dtal (ChainDB.BlockInTheFuture pt slot) =
       mconcat [ "kind" .= String "BlockInTheFuture"
                , "block" .= forMachine dtal pt
@@ -327,6 +361,9 @@ instance ( LogFormatting (Header blk)
                , "block" .= forMachine dtal pt ]
   forMachine dtal (ChainDB.TrySwitchToAFork pt _) =
       mconcat [ "kind" .= String "TraceAddBlockEvent.TrySwitchToAFork"
+               , "block" .= forMachine dtal pt ]
+  forMachine dtal (ChainDB.ChangingSelection pt) =
+      mconcat [ "kind" .= String "TraceAddBlockEvent.ChangingSelection"
                , "block" .= forMachine dtal pt ]
   forMachine dtal (ChainDB.AddedToCurrentChain events _ base extended) =
       mconcat $
@@ -348,33 +385,59 @@ instance ( LogFormatting (Header blk)
                | not (null events) ]
   forMachine dtal (ChainDB.AddBlockValidation ev') =
     kindContext "AddBlockEvent" $ forMachine dtal ev'
-  forMachine dtal (ChainDB.AddedBlockToVolatileDB pt (BlockNo bn) _) =
-      mconcat [ "kind" .= String "AddedBlockToVolatileDB"
-               , "block" .= forMachine dtal pt
-               , "blockNo" .= showT bn ]
+  forMachine dtal (ChainDB.AddedBlockToVolatileDB pt (BlockNo bn) _ enclosing) =
+      mconcat $ [ "kind" .= String "AddedBlockToVolatileDB"
+                , "block" .= forMachine dtal pt
+                , "blockNo" .= showT bn ]
+                <> [ "risingEdge" .= True | RisingEdge <- [enclosing] ]
   forMachine dtal (ChainDB.ChainSelectionForFutureBlock pt) =
       mconcat [ "kind" .= String "TChainSelectionForFutureBlock"
                , "block" .= forMachine dtal pt ]
+  forMachine dtal (ChainDB.PipeliningEvent ev') =
+    kindContext "PipeliningEvent" $ forMachine dtal ev'
 
   asMetrics (ChainDB.SwitchedToAFork _warnings newTipInfo _oldChain newChain) =
     let ChainInformation { slots, blocks, density, epoch, slotInEpoch } =
           chainInformation newTipInfo newChain 0
-    in  [ DoubleM "cardano.node.density" (fromRational density)
-        , IntM    "cardano.node.slotNum" (fromIntegral slots)
-        , IntM    "cardano.node.blockNum" (fromIntegral blocks)
-        , IntM    "cardano.node.slotInEpoch" (fromIntegral slotInEpoch)
-        , IntM    "cardano.node.epoch" (fromIntegral (unEpochNo epoch))
+    in  [ DoubleM "ChainDB.Density" (fromRational density)
+        , IntM    "ChainDB.SlotNum" (fromIntegral slots)
+        , IntM    "ChainDB.BlockNum" (fromIntegral blocks)
+        , IntM    "ChainDB.SlotInEpoch" (fromIntegral slotInEpoch)
+        , IntM    "ChainDB.Epoch" (fromIntegral (unEpochNo epoch))
         ]
   asMetrics (ChainDB.AddedToCurrentChain _warnings newTipInfo _oldChain newChain) =
     let ChainInformation { slots, blocks, density, epoch, slotInEpoch } =
           chainInformation newTipInfo newChain 0
-    in  [ DoubleM "cardano.node.density" (fromRational density)
-        , IntM    "cardano.node.slotNum" (fromIntegral slots)
-        , IntM    "cardano.node.blockNum" (fromIntegral blocks)
-        , IntM    "cardano.node.slotInEpoch" (fromIntegral slotInEpoch)
-        , IntM    "cardano.node.epoch" (fromIntegral (unEpochNo epoch))
+    in  [ DoubleM "ChainDB.Density" (fromRational density)
+        , IntM    "ChainDB.SlotNum" (fromIntegral slots)
+        , IntM    "ChainDB.BlockNum" (fromIntegral blocks)
+        , IntM    "ChainDB.SlotInEpoch" (fromIntegral slotInEpoch)
+        , IntM    "ChainDB.Epoch" (fromIntegral (unEpochNo epoch))
         ]
   asMetrics _ = []
+
+instance ( ConvertRawHash (Header blk)
+         , HasHeader (Header blk)
+         ) => LogFormatting (ChainDB.TracePipeliningEvent blk) where
+  forHuman (ChainDB.SetTentativeHeader hdr enclosing) =
+      case enclosing of
+        RisingEdge  -> "About to set tentative header to " <> renderPointAsPhrase (blockPoint hdr)
+        FallingEdge -> "Set tentative header to " <> renderPointAsPhrase (blockPoint hdr)
+  forHuman (ChainDB.TrapTentativeHeader hdr) =
+      "Discovered trap tentative header " <> renderPointAsPhrase (blockPoint hdr)
+  forHuman (ChainDB.OutdatedTentativeHeader hdr) =
+      "Tentative header is now outdated " <> renderPointAsPhrase (blockPoint hdr)
+
+  forMachine dtals (ChainDB.SetTentativeHeader hdr enclosing) =
+      mconcat $ [ "kind" .= String "SetTentativeHeader"
+                , "block" .= renderPointForDetails dtals (blockPoint hdr) ]
+                <> [ "risingEdge" .= True | RisingEdge <- [enclosing] ]
+  forMachine dtals (ChainDB.TrapTentativeHeader hdr) =
+      mconcat [ "kind" .= String "TrapTentativeHeader"
+               , "block" .= renderPointForDetails dtals (blockPoint hdr) ]
+  forMachine dtals (ChainDB.OutdatedTentativeHeader hdr) =
+      mconcat [ "kind" .= String "OutdatedTentativeHeader"
+               , "block" .= renderPointForDetails dtals (blockPoint hdr)]
 
 addedHdrsNewChain :: HasHeader (Header blk)
   => AF.AnchoredFragment (Header blk)
@@ -529,6 +592,10 @@ docChainDBAddBlock = Documented [
         "The block was added to the queue and will be added to the ChainDB by\
         \ the background thread. The size of the queue is included.."
     , DocMsg
+        ["PoppedBlockFromQueue"]
+        []
+        ""
+    , DocMsg
         ["BlockInTheFuture"]
         []
         "The block is from the future, i.e., its slot number is greater than\
@@ -554,17 +621,17 @@ docChainDBAddBlock = Documented [
         \ it is preferable to our chain)."
     , DocMsg
          ["AddedToCurrentChain"]
-        [("cardano.node.density",
+        [("ChainDB.Density",
           "The actual number of blocks created over the maximum expected number\
           \ of blocks that could be created over the span of the last @k@ blocks.")
-        , ("cardano.node.slots",
+        , ("ChainDB.Slots",
           "Number of slots in this chain fragment.")
-        , ("cardano.node.blocks",
+        , ("ChainDB.Blocks",
           "Number of blocks in this chain fragment.")
-        , ("cardano.node.slotInEpoch",
+        , ("ChainDB.SlotInEpoch",
           "Relative slot number of the tip of the current chain within the\
           \epoch..")
-        , ("cardano.node.epoch",
+        , ("ChainDB.Epoch",
           "In which epoch is the tip of the current chain.")
         ]
         "The new block fits onto the current chain (first\
@@ -572,17 +639,17 @@ docChainDBAddBlock = Documented [
         \ chain (second fragment)."
     , DocMsg
          ["SwitchedToAFork"]
-        [ ("cardano.node.density",
+        [ ("ChainDB.Density",
           "The actual number of blocks created over the maximum expected number\
           \ of blocks that could be created over the span of the last @k@ blocks.")
-        , ("cardano.node.slots",
+        , ("ChainDB.Slots",
           "Number of slots in this chain fragment.")
-        , ("cardano.node.blocks",
+        , ("ChainDB.Blocks",
           "Number of blocks in this chain fragment.")
-        , ("cardano.node.slotInEpoch",
+        , ("ChainDB.SlotInEpoch",
           "Relative slot number of the tip of the current chain within the\
           \epoch..")
-        , ("cardano.node.epoch",
+        , ("ChainDB.Epoch",
           "In which epoch is the tip of the current chain.")
         ]
         "The new block fits onto some fork and we have switched to that fork\
@@ -612,11 +679,30 @@ docChainDBAddBlock = Documented [
         "An event traced during validating performed while adding a block.\
         \ A point was found to be invalid."
     , DocMsg
+        ["AddBlockValidation", "UpdateLedgerDb"]
+        []
+        ""
+    , DocMsg
         ["ChainSelectionForFutureBlock"]
         []
         "Run chain selection for a block that was previously from the future.\
         \ This is done for all blocks from the future each time a new block is\
         \ added."
+    , DocMsg
+        ["PipeliningEvent", "SetTentativeHeader"]
+        []
+        "An event traced during block selection when the tentative header\
+        \ (in the context of diffusion pipelining) is set."
+    , DocMsg
+        ["PipeliningEvent", "TrapTentativeHeader"]
+        []
+        "An event traced during block selection when the body of the tentative\
+        \ header turned out to be invalid."
+    , DocMsg
+        ["PipeliningEvent", "OutdatedTentativeHeader"]
+        []
+        "An event traced during block selection when the tentative header got\
+        \ cleared on chain selection."
   ]
 
 
@@ -1142,7 +1228,7 @@ instance ( StandardHash blk
     mconcat [ "kind" .= String "DeletedSnapshot"
              , "snapshot" .= forMachine dtals snap ]
   forMachine dtals (LedgerDB.InvalidSnapshot snap failure) =
-    mconcat [ "kind" .= String "TraceLedgerEvent.InvalidSnapshot"
+    mconcat [ "kind" .= String "InvalidSnapshot"
              , "snapshot" .= forMachine dtals snap
              , "failure" .= show failure ]
 

@@ -42,7 +42,7 @@ let
           localNodeSocketPath = "../node-0/node.socket";
 
           ## nodeConfig of the locally running node.
-          localNodeConf = exemplarNode.serviceConfig.value;
+          localNodeConf = removeAttrs exemplarNode.serviceConfig.value ["executable"];
 
           ## The nodeConfig of the Tx generator itself.
           nodeConfig = backend.finaliseGeneratorConfig generatorNodeConfigDefault;
@@ -52,7 +52,9 @@ let
           };
         }
         //
-        removeAttrs profile.value.generator ["epochs"];
+        ((x: recursiveUpdate x
+          { tx_count = __ceil x.tx_count; })
+          (removeAttrs profile.value.generator ["epochs"]));
 
   ## Given an env config, evaluate it and produce the node service.
   ## Call the given function on this service.

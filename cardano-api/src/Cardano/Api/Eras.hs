@@ -1,6 +1,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 
@@ -26,7 +27,6 @@ module Cardano.Api.Eras
   , Shelley
   , Allegra
   , Mary
-  , Babbage
 
     -- * Shelley-based eras
   , ShelleyBasedEra(..)
@@ -48,16 +48,15 @@ module Cardano.Api.Eras
 
 import           Prelude
 
+import           Cardano.Api.HasTypeProxy
+
+import           Control.DeepSeq
 import           Data.Aeson (FromJSON (..), ToJSON, toJSON, withText)
 import qualified Data.Text as Text
 import           Data.Type.Equality (TestEquality (..), (:~:) (Refl))
 
 import           Ouroboros.Consensus.Shelley.Eras as Consensus (StandardAllegra, StandardAlonzo,
-                   StandardCrypto, StandardMary, StandardShelley)
-
-import qualified Cardano.Ledger.Babbage as Babbage
-
-import           Cardano.Api.HasTypeProxy
+                   StandardBabbage, StandardMary, StandardShelley)
 
 
 -- | A type used as a tag to distinguish the Byron era.
@@ -110,7 +109,6 @@ type Byron   = ByronEra
 type Shelley = ShelleyEra
 type Allegra = AllegraEra
 type Mary    = MaryEra
-type Babbage = BabbageEra
 
 {-# DEPRECATED Byron   "Use 'ByronEra' or 'ByronAddr' as appropriate" #-}
 {-# DEPRECATED Shelley "Use 'ShelleyEra' or 'ShelleyAddr' as appropriate" #-}
@@ -310,9 +308,18 @@ data ShelleyBasedEra era where
      ShelleyBasedEraAlonzo  :: ShelleyBasedEra AlonzoEra
      ShelleyBasedEraBabbage :: ShelleyBasedEra BabbageEra
 
+instance NFData (ShelleyBasedEra era) where
+  rnf = \case
+    ShelleyBasedEraShelley -> ()
+    ShelleyBasedEraAllegra -> ()
+    ShelleyBasedEraMary    -> ()
+    ShelleyBasedEraAlonzo  -> ()
+    ShelleyBasedEraBabbage -> ()
+
 deriving instance Eq   (ShelleyBasedEra era)
 deriving instance Ord  (ShelleyBasedEra era)
 deriving instance Show (ShelleyBasedEra era)
+
 
 -- | The class of eras that are based on Shelley. This allows uniform handling
 -- of Shelley-based eras, but also non-uniform by making case distinctions on
@@ -332,7 +339,6 @@ instance IsShelleyBasedEra MaryEra where
 
 instance IsShelleyBasedEra AlonzoEra where
    shelleyBasedEra = ShelleyBasedEraAlonzo
-
 
 instance IsShelleyBasedEra BabbageEra where
    shelleyBasedEra = ShelleyBasedEraBabbage
@@ -406,6 +412,5 @@ type family ShelleyLedgerEra era where
   ShelleyLedgerEra AllegraEra = Consensus.StandardAllegra
   ShelleyLedgerEra MaryEra    = Consensus.StandardMary
   ShelleyLedgerEra AlonzoEra  = Consensus.StandardAlonzo
-  --TODO: Babbage era - depends on consensus exposing a babbage era
-  ShelleyLedgerEra BabbageEra = Babbage.BabbageEra StandardCrypto
+  ShelleyLedgerEra BabbageEra = Consensus.StandardBabbage
 

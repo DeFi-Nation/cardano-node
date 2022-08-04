@@ -1,7 +1,7 @@
 cabal-version: 3.0
 
 name:                   cardano-cli
-version:                1.33.0
+version:                1.35.0
 description:            The Cardano command-line interface.
 author:                 IOHK
 maintainer:             operations@iohk.io
@@ -70,6 +70,8 @@ library
                         Cardano.CLI.Byron.UpdateProposal
                         Cardano.CLI.Byron.Vote
 
+                        Cardano.CLI.IO.Lazy
+
                         Cardano.CLI.Shelley.Commands
                         Cardano.CLI.Shelley.Key
                         Cardano.CLI.Shelley.Orphans
@@ -116,7 +118,7 @@ library
                       , cardano-prelude
                       , cardano-protocol-tpraos
                       , cardano-slotting
-                      , compact-map
+                      , vector-map
                       , contra-tracer
                       , cborg >= 0.2.4 && < 0.3
                       , containers
@@ -130,10 +132,12 @@ library
                       , ouroboros-consensus
                       , ouroboros-consensus-byron
                       , ouroboros-consensus-cardano
+                      , ouroboros-consensus-protocol
                       , ouroboros-consensus-shelley
                       , ouroboros-network
                       , parsec
                       , prettyprinter
+                      , random
                       , cardano-ledger-shelley
                       , set-algebra
                       , split
@@ -142,6 +146,7 @@ library
                       , time
                       , transformers
                       , transformers-except
+                      , unliftio-core
                       , utf8-string
                       , vector
                       , yaml

@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RecordWildCards #-}
 
@@ -57,11 +58,11 @@ instance LogFormatting ForgeThreadStats where
              , "lastSlot"           .= String (show ftsLastSlot)
              ]
   asMetrics ForgeThreadStats {..} =
-    [ IntM "nodeCannotForgeNum" (fromIntegral ftsNodeCannotForgeNum)
-    , IntM "nodeIsLeaderNum"    (fromIntegral ftsNodeIsLeaderNum)
-    , IntM "blocksForgedNum"    (fromIntegral ftsBlocksForgedNum)
-    , IntM "slotsMissed"        (fromIntegral ftsSlotsMissedNum)
-    , IntM "lastSlot"           (fromIntegral ftsLastSlot)
+    [ IntM "Forge.NodeCannotForgeNum" (fromIntegral ftsNodeCannotForgeNum)
+    , IntM "Forge.NodeIsLeaderNum"    (fromIntegral ftsNodeIsLeaderNum)
+    , IntM "Forge.BlocksForgedNum"    (fromIntegral ftsBlocksForgedNum)
+    , IntM "Forge.SlotsMissed"        (fromIntegral ftsSlotsMissedNum)
+    , IntM "Forge.LastSlot"           (fromIntegral ftsLastSlot)
     ]
 
 
@@ -70,19 +71,21 @@ emptyForgeThreadStats = ForgeThreadStats 0 0 0 0 0
 
 docForgeStats :: Documented
   (Either
-      (Consensus.TraceLabelCreds (Consensus.TraceForgeEvent blk))
-      (Consensus.TraceLabelCreds TraceStartLeadershipCheckPlus))
+      (Consensus.TraceForgeEvent blk)
+      TraceStartLeadershipCheckPlus)
 docForgeStats = Documented [
     DocMsg
-      ["ForgeStats"]
-      [("nodeCannotForgeNum",
+      []
+      [("Forge.NodeCannotForgeNum",
         "How many times this node could not forge?")
-      ,("nodeIsLeaderNum",
+      ,("Forge.NodeIsLeaderNum",
         "How many times this node was leader?")
-      ,("blocksForgedNum",
+      ,("Forge.BlocksForgedNum",
         "How many blocks did forge in this node?")
-      ,("slotsMissed",
+      ,("Forge.SlotsMissed",
         "How many slots were missed in this node?")
+      ,("Forge.LastSlot",
+        "")        
       ]
       "nodeCannotForgeNum shows how many times this node could not forge.\
       \\nnodeIsLeaderNum shows how many times this node was leader.\
@@ -119,18 +122,22 @@ instance LogFormatting ForgingStats where
              , "slotsMissed"        .= String (show fsSlotsMissedNum)
              ]
   asMetrics ForgingStats {..} =
-    [ IntM "nodeCannotForgeNum" (fromIntegral fsNodeCannotForgeNum)
-    , IntM "nodeIsLeaderNum"    (fromIntegral fsNodeIsLeaderNum)
-    , IntM "blocksForgedNum"    (fromIntegral fsBlocksForgedNum)
-    , IntM "slotsMissed"        (fromIntegral fsSlotsMissedNum)
-    ]
+    [ IntM "Forge.NodeCannotForgeNum" (fromIntegral fsNodeCannotForgeNum)
+    , IntM "Forge.NodeIsLeaderNum"    (fromIntegral fsNodeIsLeaderNum)
+    , IntM "Forge.BlocksForgedNum"    (fromIntegral fsBlocksForgedNum)
+    , IntM "Forge.SlotsMissed"        (fromIntegral fsSlotsMissedNum)
+    ]   
 
 emptyForgingStats :: ForgingStats
 emptyForgingStats = ForgingStats mempty 0 0 0 0
 
 forgeThreadStats :: Trace IO (Folding (ForgeTracerType blk) ForgingStats)
   -> IO (Trace IO (ForgeTracerType blk))
-forgeThreadStats = foldMTraceM calculateThreadStats emptyForgingStats
+forgeThreadStats = foldMCondTraceM calculateThreadStats emptyForgingStats
+  (\case
+      Left Consensus.TraceStartLeadershipCheck{} -> True
+      Left _  -> False
+      Right _ -> True)
 
 calculateThreadStats :: MonadIO m
   => ForgingStats
@@ -138,14 +145,14 @@ calculateThreadStats :: MonadIO m
   -> ForgeTracerType blk
   -> m ForgingStats
 calculateThreadStats stats _context
-    (Left (TraceLabelCreds _ TraceNodeCannotForge {})) = do
+    (Left TraceNodeCannotForge {}) = do
       mapThreadStats
         stats
         (\fts -> (fts { ftsNodeCannotForgeNum = ftsNodeCannotForgeNum fts + 1}
                       , Nothing))
         (\fs _ ->  (fs  { fsNodeCannotForgeNum  = fsNodeCannotForgeNum fs + 1 }))
 calculateThreadStats stats _context
-    (Left (TraceLabelCreds _ (TraceNodeIsLeader (SlotNo slot')))) = do
+    (Left (TraceNodeIsLeader (SlotNo slot'))) = do
       let slot = fromIntegral slot'
       mapThreadStats
         stats
@@ -153,14 +160,14 @@ calculateThreadStats stats _context
                    , ftsLastSlot = slot}, Nothing))
         (\fs _ ->  (fs  { fsNodeIsLeaderNum  = fsNodeIsLeaderNum fs + 1 }))
 calculateThreadStats stats _context
-    (Left (TraceLabelCreds _ TraceForgedBlock {})) = do
+    (Left TraceForgedBlock {}) = do
       mapThreadStats
         stats
         (\fts -> (fts { ftsBlocksForgedNum = ftsBlocksForgedNum fts + 1}
                       , Nothing))
         (\fs _ ->  (fs  { fsBlocksForgedNum  = fsBlocksForgedNum fs + 1 }))
 calculateThreadStats stats _context
-    (Left (TraceLabelCreds _ (TraceNodeNotLeader (SlotNo slot')))) = do
+    (Left (TraceNodeNotLeader (SlotNo slot'))) = do
       let slot = fromIntegral slot'
       mapThreadStats
         stats

@@ -16,8 +16,11 @@ import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import           System.Time.Extra (sleep)
 
+import           Cardano.Tracer.Environment
 import           Cardano.Tracer.Acceptors.Run (runAcceptors)
 import           Cardano.Tracer.Configuration
+import           Cardano.Tracer.Handlers.RTView.Run (initEventsQueues, initSavedTraceObjects)
+import           Cardano.Tracer.Handlers.RTView.State.Historical
 import           Cardano.Tracer.Types (DataPointRequestors)
 import           Cardano.Tracer.Utils (initAcceptedMetrics, initConnectedNodes,
                    initDataPointRequestors, initProtocolsBrake)
@@ -35,10 +38,33 @@ launchAcceptorsSimple mode localSock dpName = do
   dpRequestors <- initDataPointRequestors
   connectedNodes <- initConnectedNodes
   acceptedMetrics <- initAcceptedMetrics
+  savedTO <- initSavedTraceObjects
   currentLogLock <- newLock
+  currentDPLock <- newLock
+  eventsQueues <- initEventsQueues dpRequestors currentDPLock
+
+  chainHistory <- initBlockchainHistory
+  resourcesHistory <- initResourcesHistory
+  txHistory <- initTransactionsHistory
+
+  let tracerEnv =
+        TracerEnv
+          { teConfig            = mkConfig
+          , teConnectedNodes    = connectedNodes
+          , teAcceptedMetrics   = acceptedMetrics
+          , teSavedTO           = savedTO
+          , teBlockchainHistory = chainHistory
+          , teResourcesHistory  = resourcesHistory
+          , teTxHistory         = txHistory
+          , teCurrentLogLock    = currentLogLock
+          , teCurrentDPLock     = currentDPLock
+          , teEventsQueues      = eventsQueues
+          , teDPRequestors      = dpRequestors
+          , teProtocolsBrake    = protocolsBrake
+          }
+
   void . sequenceConcurrently $
-    [ runAcceptors mkConfig connectedNodes acceptedMetrics
-                   dpRequestors protocolsBrake currentLogLock
+    [ runAcceptors tracerEnv
     , runDataPointsPrinter dpName dpRequestors
     ]
  where
@@ -51,6 +77,7 @@ launchAcceptorsSimple mode localSock dpName = do
     , ekgRequestFreq = Just 1.0
     , hasEKG         = Nothing
     , hasPrometheus  = Nothing
+    , hasRTView      = Nothing
     , logging        = NE.fromList [LoggingParams "/tmp/demo-acceptor" FileMode ForHuman]
     , rotation       = Nothing
     , verbosity      = Just Minimum

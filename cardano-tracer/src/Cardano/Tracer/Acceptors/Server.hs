@@ -6,7 +6,6 @@ module Cardano.Tracer.Acceptors.Server
 
 import           Codec.CBOR.Term (Term)
 import           Control.Concurrent.Async (race_, wait)
-import           Control.Concurrent.Extra (Lock)
 import qualified Data.ByteString.Lazy as LBS
 import           Data.Void (Void)
 import           Data.Word (Word32)
@@ -39,38 +38,33 @@ import qualified Trace.Forward.Configuration.TraceObject as TF
 import           Trace.Forward.Run.DataPoint.Acceptor (acceptDataPointsResp)
 import           Trace.Forward.Run.TraceObject.Acceptor (acceptTraceObjectsResp)
 
-import           Cardano.Tracer.Acceptors.Utils (prepareDataPointRequestor,
-                   prepareMetricsStores, removeDisconnectedNode)
+import           Cardano.Tracer.Acceptors.Utils (notifyAboutNodeDisconnected,
+                   prepareDataPointRequestor, prepareMetricsStores, removeDisconnectedNode)
 import qualified Cardano.Tracer.Configuration as TC
+import           Cardano.Tracer.Environment
 import           Cardano.Tracer.Handlers.Logs.TraceObjects (traceObjectsHandler)
-import           Cardano.Tracer.Types (AcceptedMetrics, ConnectedNodes, DataPointRequestors)
 import           Cardano.Tracer.Utils (connIdToNodeId)
 
 runAcceptorsServer
-  :: TC.TracerConfig
+  :: TracerEnv
   -> FilePath
   -> ( EKGF.AcceptorConfiguration
      , TF.AcceptorConfiguration TraceObject
      , DPF.AcceptorConfiguration
      )
-  -> ConnectedNodes
-  -> AcceptedMetrics
-  -> DataPointRequestors
-  -> Lock
   -> IO ()
-runAcceptorsServer config p (ekgConfig, tfConfig, dpfConfig)
-                   connectedNodes acceptedMetrics dpRequestors currentLogLock = withIOManager $ \iocp ->
+runAcceptorsServer tracerEnv p (ekgConfig, tfConfig, dpfConfig) = withIOManager $ \iocp ->
   doListenToForwarder
     (localSnocket iocp)
     (localAddressFromPath p)
-    (TC.networkMagic config)
+    (TC.networkMagic $ teConfig tracerEnv)
     noTimeLimitsHandshake $
     -- Please note that we always run all the supported protocols,
     -- there is no mechanism to disable some of them.
     appResponder
-      [ (runEKGAcceptor ekgConfig connectedNodes acceptedMetrics errorHandler, 1)
-      , (runTraceObjectsAcceptor config tfConfig currentLogLock  errorHandler, 2)
-      , (runDataPointsAcceptor dpfConfig connectedNodes dpRequestors errorHandler, 3)
+      [ (runEKGAcceptor          tracerEnv ekgConfig errorHandler, 1)
+      , (runTraceObjectsAcceptor tracerEnv tfConfig  errorHandler, 2)
+      , (runDataPointsAcceptor   tracerEnv dpfConfig errorHandler, 3)
       ]
  where
   appResponder protocolsWithNums =
@@ -82,7 +76,9 @@ runAcceptorsServer config p (ekgConfig, tfConfig, dpfConfig)
          }
       | (protocol, num) <- protocolsWithNums
       ]
-  errorHandler = removeDisconnectedNode connectedNodes acceptedMetrics dpRequestors
+  errorHandler connId = do
+    removeDisconnectedNode tracerEnv connId
+    notifyAboutNodeDisconnected tracerEnv connId
 
 doListenToForwarder
   :: Snocket IO LocalSocket LocalAddress
@@ -113,40 +109,37 @@ doListenToForwarder snocket address netMagic timeLimits app = do
             $ \_ serverAsync -> wait serverAsync -- Block until async exception.
 
 runEKGAcceptor
-  :: EKGF.AcceptorConfiguration
-  -> ConnectedNodes
-  -> AcceptedMetrics
+  :: TracerEnv
+  -> EKGF.AcceptorConfiguration
   -> (ConnectionId LocalAddress -> IO ())
   -> ConnectionId LocalAddress
   -> RunMiniProtocol 'ResponderMode LBS.ByteString IO Void ()
-runEKGAcceptor ekgConfig connectedNodes acceptedMetrics errorHandler connId =
+runEKGAcceptor tracerEnv ekgConfig errorHandler connId =
   acceptEKGMetricsResp
     ekgConfig
-    (prepareMetricsStores connectedNodes acceptedMetrics connId)
+    (prepareMetricsStores tracerEnv connId)
     (errorHandler connId)
 
 runTraceObjectsAcceptor
-  :: TC.TracerConfig
+  :: TracerEnv
   -> TF.AcceptorConfiguration TraceObject
-  -> Lock
   -> (ConnectionId LocalAddress -> IO ())
   -> ConnectionId LocalAddress
   -> RunMiniProtocol 'ResponderMode LBS.ByteString IO Void ()
-runTraceObjectsAcceptor config tfConfig currentLogLock errorHandler connId =
+runTraceObjectsAcceptor tracerEnv tfConfig errorHandler connId =
   acceptTraceObjectsResp
     tfConfig
-    (traceObjectsHandler config (connIdToNodeId connId) currentLogLock)
+    (traceObjectsHandler tracerEnv $ connIdToNodeId connId)
     (errorHandler connId)
 
 runDataPointsAcceptor
-  :: DPF.AcceptorConfiguration
-  -> ConnectedNodes
-  -> DataPointRequestors
+  :: TracerEnv
+  -> DPF.AcceptorConfiguration
   -> (ConnectionId LocalAddress -> IO ())
   -> ConnectionId LocalAddress
   -> RunMiniProtocol 'ResponderMode LBS.ByteString IO Void ()
-runDataPointsAcceptor dpfConfig connectedNodes dpRequestors errorHandler connId =
+runDataPointsAcceptor tracerEnv dpfConfig errorHandler connId =
   acceptDataPointsResp
     dpfConfig
-    (prepareDataPointRequestor connectedNodes dpRequestors connId)
+    (prepareDataPointRequestor tracerEnv connId)
     (errorHandler connId)

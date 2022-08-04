@@ -1,14 +1,17 @@
 module Cardano.Util
-  ( module Cardano.Util
+  ( module Prelude
+  , module Cardano.Util
+  , module Cardano.Ledger.BaseTypes
   , module Control.Arrow
   , module Control.Applicative
   , module Control.Concurrent.Async
   , module Control.Monad.Trans.Except.Extra
+  , module Ouroboros.Consensus.Util.Time
   , module Text.Printf
   )
 where
 
-import Prelude                          (String)
+import Prelude                          (String, error)
 import Cardano.Prelude
 
 import Control.Arrow                    ((&&&), (***))
@@ -18,14 +21,45 @@ import Control.DeepSeq                  qualified as DS
 import Control.Monad.Trans.Except.Extra (firstExceptT, newExceptT)
 import Data.Aeson                       (FromJSON, ToJSON, encode, eitherDecode)
 import Data.ByteString.Lazy.Char8       qualified as LBS
+import Data.List                        (span)
 import Data.Text                        qualified as T
 import Data.Text.Short                  (fromText)
+import Data.Vector                      (Vector)
+import Data.Vector                      qualified as Vec
+import GHC.Base                         (build)
 import Text.Printf                      (printf)
 
 import System.FilePath                  qualified as F
 
-import Cardano.Analysis.Ground
+import Ouroboros.Consensus.Util.Time
 
+import Cardano.Analysis.Ground
+import Cardano.Ledger.BaseTypes         (StrictMaybe (..), fromSMaybe)
+
+
+smaybe :: b -> (a -> b) -> StrictMaybe a -> b
+smaybe x _  SNothing = x
+smaybe _ f (SJust x) = f x
+
+mapSMaybe          :: (a -> StrictMaybe b) -> [a] -> [b]
+mapSMaybe _ []     = []
+mapSMaybe f (x:xs) =
+ let rs = mapSMaybe f xs in
+ case f x of
+  SNothing -> rs
+  SJust r  -> r:rs
+{-# NOINLINE [1] mapSMaybe #-}
+
+{-# RULES
+"mapSMaybe"     [~1] forall f xs. mapSMaybe f xs
+                     = build (\c n -> foldr (mapSMaybeFB c f) n xs)
+  #-}
+
+{-# INLINE [0] mapSMaybeFB #-} -- See Note [Inline FB functions] in GHC.List
+mapSMaybeFB :: (b -> r -> r) -> (a -> StrictMaybe b) -> a -> r -> r
+mapSMaybeFB cons f x next = case f x of
+  SNothing -> next
+  SJust r -> cons r next
 
 mapConcurrentlyPure :: NFData b => (a -> b) -> [a] -> IO [b]
 mapConcurrentlyPure f =
@@ -40,8 +74,19 @@ mapAndUnzip f (x:xs)
     in
     (r1:rs1, r2:rs2)
 
+mapHead :: (a -> a) -> [a] -> [a]
+mapHead f (x:xs) = f x:xs
+mapHead _ [] = error "mapHead: partial"
+
 redistribute :: (a, (b, c)) -> ((a, b), (a, c))
 redistribute    (a, (b, c))  = ((a, b), (a, c))
+
+nChunksEachOf :: Int -> Int -> Text -> [Text]
+nChunksEachOf chunks each center =
+  T.chunksOf each (T.center (each * chunks) ' ' center)
+
+toDouble :: forall a. Real a => a -> Double
+toDouble = fromRational . toRational
 
 data F
   = R String
@@ -122,3 +167,14 @@ dumpAssociatedTextStreams ident xss = liftIO $
         progress ident (Q f)
         withFile (replaceExtension f $ ident <> ".txt") WriteMode $ \hnd -> do
           forM_ xs $ hPutStrLn hnd
+
+spans :: forall a. (a -> Bool) -> [a] -> [Vector a]
+spans f = go []
+ where
+   go :: [Vector a] -> [a] -> [Vector a]
+   go acc [] = reverse acc
+   go acc xs =
+     case span f $ dropWhile (not . f) xs of
+       ([], rest) -> go acc rest
+       (ac, rest) ->
+         go (Vec.fromList ac:acc) rest

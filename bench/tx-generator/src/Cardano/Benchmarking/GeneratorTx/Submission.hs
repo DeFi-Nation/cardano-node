@@ -42,12 +42,12 @@ import           Cardano.Tracing.OrphanInstances.Consensus ()
 import           Cardano.Tracing.OrphanInstances.Network ()
 import           Cardano.Tracing.OrphanInstances.Shelley ()
 
-import           Ouroboros.Network.Protocol.TxSubmission.Type (TokBlockingStyle (..))
+import           Ouroboros.Network.Protocol.TxSubmission2.Type (TokBlockingStyle (..))
 
 import           Cardano.Api
 
 import           Cardano.Benchmarking.TpsThrottle
-import           Cardano.Benchmarking.Tracer
+import           Cardano.Benchmarking.LogTypes
 import           Cardano.Benchmarking.Types
 
 import           Cardano.Benchmarking.GeneratorTx.SubmissionClient

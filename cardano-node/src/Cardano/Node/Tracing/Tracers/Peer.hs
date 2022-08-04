@@ -123,17 +123,17 @@ namesForPeers :: [PeerT blk] -> [Text]
 namesForPeers _ = []
 
 severityPeers :: [PeerT blk] -> SeverityS
+severityPeers [] = Debug
 severityPeers _ = Notice
 
 instance LogFormatting [PeerT blk] where
-  forMachine DMinimal _ = mconcat [ "kind"  .= String "NodeKernelPeers"]
-  forMachine _ []       = mconcat [ "kind"  .= String "NodeKernelPeers"]
+  forMachine _ []       = mempty
   forMachine dtal xs    = mconcat
     [ "kind"  .= String "NodeKernelPeers"
     , "peers" .= toJSON (foldl' (\acc x -> forMachine dtal x : acc) [] xs)
     ]
   forHuman peers = Text.concat $ intersperse ", " (map ppPeer peers)
-  asMetrics peers = [IntM "peersFromNodeKernel" (fromIntegral (length peers))]
+  asMetrics peers = [IntM "Net.PeersFromNodeKernel" (fromIntegral (length peers))]
 
 instance LogFormatting (PeerT blk) where
   forMachine _dtal (PeerT cid _af status inflight) =
@@ -149,6 +149,6 @@ docPeers :: Documented [PeerT blk]
 docPeers = Documented [
       DocMsg
         []
-        [("peersFromNodeKernel","TODO Doc")]
-        "TODO Doc"
+        [("Net.PeersFromNodeKernel","")]
+        ""
     ]

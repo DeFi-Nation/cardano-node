@@ -44,74 +44,65 @@ let
         {
           TestEnableDevelopmentHardForkEras     = true;
           TestEnableDevelopmentNetworkProtocols = true;
+          TurnOnLogMetrics                      = true;
         };
       tracing = {
-        trace-dispatcher = {
-          UseTraceDispatcher   = true;
-
-          TraceOptionSeverity  = [
-            { ns = "";                                    severity = "Debug";   }
-            { ns = "Node.Resources";                      severity = "Debug";   }
-            { ns = "Node.ChainDB";                        severity = "Debug";   }
-            # { ns = "Node.Mempool";                        severity = "Debug";   }
-            # { ns = "Node.ChainDB.ImmutableDBEvent";       severity = "Warning"; }
-          ];
-
-          TraceOptionDetail = [
-            { ns = "";                                    detail = "DNormal";   }
-            { ns = "Node.BlockFetchClient";               detail = "DMinimal";  }
-          ];
-
-          TraceOptionBackend = [
-            { ns = "";
-              backends = [
-                "Stdout MachineFormat"
-                "EKGBackend"
-                "Forwarder"
-              ];
-            }
-            # { ns = "Node.ChainDB";
-            #   backends = ["Stdout HumanFormatColoured"];
-            # }
-          ];
-
-          TraceOptionLimiter = [
-            { ns = "Node.ChainDB.OpenEvent";
-              limiterName = "ChainDB open limiter";
-              limiterFrequency = 0.1;
-            }
-          ];
-
-          TraceOptionForwarder = {
-            mode = "Initiator";
-            address = {
-              filePath = "/tmp/forwarder-${toString i}.sock";
-            };
-          };
-        };
-        iohk-monitoring = {
-          defaultScribes = [
-            [ "StdoutSK" "stdout" ]
-          ];
-          setupScribes =
-            [{
-              scKind   = "StdoutSK";
-              scName   = "stdout";
-              scFormat = "ScJson";
-            }];
-          minSeverity                 = "Debug";
-          TraceMempool                = true;
-          TraceTxInbound              = true;
-          TraceBlockFetchClient       = true;
-          TraceBlockFetchServer       = true;
-          TraceChainSyncHeaderServer  = true;
-          TraceChainSyncClient        = true;
-          options = {
-            mapBackends = {
-              "cardano.node.resources" = [ "KatipBK" ];
-            };
-          };
-        };
+        trace-dispatcher = import ./tracing.nix        { inherit nodeSpec; profile = profile.value; };
+        iohk-monitoring  = import ./tracing-legacy.nix { inherit nodeSpec; profile = profile.value; };
+      };
+      tracing-transform = {
+        trace-dispatcher = xs:
+          ## For trace-dispatcher, we remove all legacy tracing options:
+          removeAttrs xs
+            [
+              "TraceAcceptPolicy"
+              "TraceBlockFetchClient"
+              "TraceBlockFetchDecisions"
+              "TraceBlockFetchProtocol"
+              "TraceBlockFetchProtocolSerialised"
+              "TraceBlockFetchServer"
+              "TraceChainDb"
+              "TraceChainSyncBlockServer"
+              "TraceChainSyncClient"
+              "TraceChainSyncHeaderServer"
+              "TraceChainSyncProtocol"
+              "TraceConnectionManager"
+              "TraceDNSResolver"
+              "TraceDNSSubscription"
+              "TraceDiffusionInitialization"
+              "TraceErrorPolicy"
+              "TraceForge"
+              "TraceHandshake"
+              "TraceInboundGovernor"
+              "TraceIpSubscription"
+              "TraceLedgerPeers"
+              "TraceLocalChainSyncProtocol"
+              "TraceLocalErrorPolicy"
+              "TraceLocalHandshake"
+              "TraceLocalRootPeers"
+              "TraceLocalTxSubmissionProtocol"
+              "TraceLocalTxSubmissionServer"
+              "TraceMempool"
+              "TraceMux"
+              "TracePeerSelection"
+              "TracePeerSelectionActions"
+              "TracePublicRootPeers"
+              "TraceServer"
+              "TraceTxInbound"
+              "TraceTxOutbound"
+              "TraceTxSubmissionProtocol"
+              "TracingVerbosity"
+              "defaultBackends"
+              "defaultScribes"
+              "hasEKG"
+              "hasPrometheus"
+              "minSeverity"
+              "options"
+              "rotation"
+              "setupBackends"
+              "setupScribes"
+            ];
+        iohk-monitoring  = xs: xs;
       };
       era_setup_hardforks = {
         shelley =
@@ -132,29 +123,56 @@ let
             TestMaryHardForkAtEpoch    = 0;
             TestAlonzoHardForkAtEpoch  = 0;
           };
+        babbage =
+          { TestShelleyHardForkAtEpoch = 0;
+            TestAllegraHardForkAtEpoch = 0;
+            TestMaryHardForkAtEpoch    = 0;
+            TestAlonzoHardForkAtEpoch  = 0;
+            TestBabbageHardForkAtEpoch = 0;
+          };
       }.${profile.value.era};
     };
     in
-    backend.finaliseNodeService nodeSpec
+    backend.finaliseNodeService profile.value nodeSpec
     {
       inherit port;
 
-      ## For the definition of 'nodeConfigBits', please see below.
+      ## For the definition of 'nodeConfigBits', please see above.
+      ## Meaning:
+      ##   1. take the common base
+      ##   2. apply either the hardforks config, or the preset (typically mainnet)
+      ##   3. overlay the tracing config
       nodeConfig =
-        backend.finaliseNodeConfig nodeSpec
+        nodeConfigBits.tracing-transform.${profile.value.node.tracing_backend}
           (recursiveUpdate
-            nodeConfigBits.base
-            (if __hasAttr "preset" profile.value
-             then readJSONMay (./presets + "/${profile.value.preset}/config.json")
-             else nodeConfigBits.era_setup_hardforks //
-                  nodeConfigBits.tracing.${profile.value.node.tracing_backend}));
+            (backend.finaliseNodeConfig nodeSpec
+              (recursiveUpdate
+                (recursiveUpdate
+                  nodeConfigBits.base
+                  (if __hasAttr "preset" profile.value
+                   then readJSONMay (./presets + "/${profile.value.preset}/config.json")
+                   else nodeConfigBits.era_setup_hardforks))
+                nodeConfigBits.tracing.${profile.value.node.tracing_backend}))
+            profile.value.node.verbatim);
 
       extraArgs =
-        let shutdownSlot = profile.value.node.shutdown_on_slot_synced;
-        in backend.finaliseNodeArgs nodeSpec
-          (if shutdownSlot != null
-           then ["--shutdown-on-slot-synced" (toString shutdownSlot)]
-           else []);
+        let shutdownSlot  = profile.value.node.shutdown_on_slot_synced;
+            shutdownBlock = profile.value.node.shutdown_on_block_synced;
+            mayKindArgs =
+              val: kind: flag:
+              if val != null
+              then if isAttrs val
+                   then if val.${kind} or null != null
+                        then [flag (toString val.${kind})]
+                        else []
+                   else [flag (toString val)]
+              else [];
+            shutBlockArgs = mayKindArgs shutdownBlock nodeSpec.kind "--shutdown-on-block-synced";
+            shutSlotArgs  = mayKindArgs shutdownSlot  nodeSpec.kind "--shutdown-on-slot-synced";
+        in backend.finaliseNodeArgs profile nodeSpec
+          (if   shutBlockArgs != []
+           then shutBlockArgs
+           else shutSlotArgs);
     };
 
   ## Given an env config, evaluate it and produce the node service.

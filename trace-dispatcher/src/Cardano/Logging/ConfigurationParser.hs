@@ -14,7 +14,9 @@ import           Control.Exception (throwIO)
 import qualified Data.Aeson as AE
 import           Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS
+import           Data.Functor
 import           Data.List (foldl')
+import           Data.Maybe (fromMaybe)
 import qualified Data.Map as Map
 import           Data.Text (Text, split)
 import           Data.Yaml
@@ -67,15 +69,15 @@ parseRepresentation bs = transform (decodeEither' bs)
           to''
           (traceOptionForwarder cr)
           (traceOptionNodeName cr)
-          (traceOptionPeerFreqency cr)
-          (traceOptionResourceFreqency cr)
+          (traceOptionPeerFrequency cr)
+          (traceOptionResourceFrequency cr)
 
 data ConfigRepresentation = ConfigRepresentation {
     traceOptions                :: OptionsRepresentation
   , traceOptionForwarder        :: TraceOptionForwarder
   , traceOptionNodeName         :: Maybe Text
-  , traceOptionPeerFreqency     :: Maybe Int
-  , traceOptionResourceFreqency :: Maybe Int
+  , traceOptionPeerFrequency     :: Maybe Int
+  , traceOptionResourceFrequency :: Maybe Int
   }
   deriving (Eq, Ord, Show,Generic)
 
@@ -84,10 +86,10 @@ type OptionsRepresentation = Map.Map Text ConfigOptionRep
 instance AE.FromJSON ConfigRepresentation where
     parseJSON (Object obj) = ConfigRepresentation
                            <$> obj .: "TraceOptions"
-                           <*> obj .: "TraceOptionForwarder"
+                           <*> (obj .:? "TraceOptionForwarder" <&> fromMaybe defaultForwarder)
                            <*> obj .:? "TraceOptionNodeName"
-                           <*> obj .:? "TraceOptionPeerFreqency"
-                           <*> obj .:? "TraceOptionResourceFreqency"
+                           <*> obj .:? "TraceOptionPeerFrequency"
+                           <*> obj .:? "TraceOptionResourceFrequency"
 
 data ConfigOptionRep = ConfigOptionRep
     { severity :: Maybe SeverityF

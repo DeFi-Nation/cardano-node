@@ -28,6 +28,7 @@ module Cardano.Logging.Types (
   , ForwarderMode(..)
   , Verbosity(..)
   , TraceOptionForwarder(..)
+  , defaultForwarder
   , TraceConfig(..)
   , emptyTraceConfig
   , FormattedMessage(..)
@@ -108,7 +109,7 @@ data Metric
   -- | A double metric.
   -- Text is used to name the metric
     | DoubleM Text Double
-  -- | An counter metric.
+  -- | A counter metric.
   -- Text is used to name the metric
     | CounterM Text (Maybe Int)
   deriving (Show, Eq)
@@ -323,9 +324,7 @@ instance AE.FromJSON Verbosity where
                                     <> "Unknown Verbosity: " <> show other
 
 data TraceOptionForwarder = TraceOptionForwarder {
-    tofAddress          :: ForwarderAddr
-  , tofMode             :: ForwarderMode
-  , tofConnQueueSize    :: Word
+    tofConnQueueSize    :: Word
   , tofDisconnQueueSize :: Word
   , tofVerbosity        :: Verbosity
 } deriving (Eq, Ord, Show)
@@ -333,17 +332,13 @@ data TraceOptionForwarder = TraceOptionForwarder {
 instance AE.FromJSON TraceOptionForwarder where
     parseJSON (AE.Object obj) =
       TraceOptionForwarder
-        <$> obj AE..: "address"
-        <*> obj AE..: "mode"
-        <*> obj AE..:? "connQueueSize"    AE..!= 2000
+        <$> obj AE..:? "connQueueSize"    AE..!= 2000
         <*> obj AE..:? "disconnQueueSize" AE..!= 200000
         <*> obj AE..:? "verbosity"        AE..!= Minimum
 
 defaultForwarder :: TraceOptionForwarder
 defaultForwarder = TraceOptionForwarder {
-    tofAddress = LocalSocket "forwarder.sock"
-  , tofMode = Responder
-  , tofConnQueueSize = 2000
+    tofConnQueueSize = 2000
   , tofDisconnQueueSize = 200000
   , tofVerbosity = Minimum
 }
@@ -362,9 +357,9 @@ data TraceConfig = TraceConfig {
     -- | Optional human-readable name of the node.
   , tcNodeName  :: Maybe Text
     -- | Optional peer trace frequency in milliseconds.
-  , tcPeerFreqency  :: Maybe Int
+  , tcPeerFrequency  :: Maybe Int
     -- | Optional resource trace frequency in milliseconds.
-  , tcResourceFreqency :: Maybe Int
+  , tcResourceFrequency :: Maybe Int
 }
   deriving (Eq, Ord, Show)
 
@@ -373,8 +368,8 @@ emptyTraceConfig = TraceConfig {
     tcOptions = Map.empty
   , tcForwarder = defaultForwarder
   , tcNodeName = Nothing
-  , tcPeerFreqency = Just 2000 -- Every 2 seconds
-  , tcResourceFreqency = Just 1000 -- Every second
+  , tcPeerFrequency = Just 2000 -- Every 2 seconds
+  , tcResourceFrequency = Just 1000 -- Every second
   }
 
 ---------------------------------------------------------------------------

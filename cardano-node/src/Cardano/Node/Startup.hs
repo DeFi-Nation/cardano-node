@@ -79,6 +79,10 @@ data StartupTrace blk =
   --
   | NetworkConfigUpdate
 
+  -- | Re-configuration of network config is not supported.
+  --
+  | NetworkConfigUpdateUnsupported
+
   -- | Log network configuration update error.
   --
   | NetworkConfigUpdateError Text
@@ -189,12 +193,13 @@ prepareNodeInfo ptcl (SomeConsensusProtocol whichP pForInfo) tc nodeStartTime = 
         let DegenLedgerConfig cfgShelley = configLedger cfg
         in getSystemStartShelley cfgShelley
       CardanoBlockType ->
-        let CardanoLedgerConfig _ cfgShelley cfgAllegra cfgMary cfgAlonzo = configLedger cfg
+        let CardanoLedgerConfig _ cfgShelley cfgAllegra cfgMary cfgAlonzo cfgBabbage = configLedger cfg
         in minimum [ getSystemStartByron
                    , getSystemStartShelley cfgShelley
                    , getSystemStartShelley cfgAllegra
                    , getSystemStartShelley cfgMary
                    , getSystemStartShelley cfgAlonzo
+                   , getSystemStartShelley cfgBabbage
                    ]
 
   getSystemStartByron = WCT.getSystemStart . getSystemStart . configBlock $ cfg
@@ -204,3 +209,25 @@ prepareNodeInfo ptcl (SomeConsensusProtocol whichP pForInfo) tc nodeStartTime = 
     case tcNodeName tc of
       Just aName -> return aName
       Nothing    -> pack <$> getHostName
+
+-- | This information is taken from 'BasicInfoShelleyBased'. It is required for
+--   'cardano-tracer' service (particularly, for RTView).
+data NodeStartupInfo = NodeStartupInfo {
+    suiEra               :: Text
+  , suiSlotLength        :: NominalDiffTime
+  , suiEpochLength       :: Word64
+  , suiSlotsPerKESPeriod :: Word64
+  } deriving (Eq, Generic, ToJSON, FromJSON, Show)
+
+docNodeStartupInfoTraceEvent :: Documented NodeStartupInfo
+docNodeStartupInfoTraceEvent = Documented
+  [ DocMsg
+      ["NodeStartupInfo"]
+        []
+        "Startup information about this node, required for RTView\
+        \\n\
+        \\n _suiEra_: Name of the current era. \
+        \\n _suiSlotLength_: Slot length, in seconds. \
+        \\n _suiEpochLength_: Epoch length, in slots. \
+        \\n _suiSlotsPerKESPeriod_: KES period length, in slots."
+  ]

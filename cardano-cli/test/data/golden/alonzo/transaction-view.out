@@ -9,6 +9,7 @@ inputs:
 metadata: null
 mint: null
 outputs: []
+reference inputs: null
 required signers (payment key hashes needed for scripts):
 - 98717eaba8105a50a2a71831267552e337dfdc893bef5e40b8676d27
 - fafaaac8681b5050a8987f95bce4a7f99362f189879258fdbf733fa4
@@ -17,7 +18,7 @@ update proposal:
   updates:
   - genesis key hash: 1bafa294233a5a7ffbf539ae798da0943aa83d2a19398c2d0e5af114
     update:
-      UTxO storage cost per unit: 194 Lovelace
+      UTxO storage cost per word: 194 Lovelace
       collateral inputs share: 200%
       execution prices:
         memory: 196/197

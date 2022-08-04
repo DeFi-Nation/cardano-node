@@ -210,9 +210,9 @@
 
           inherit (mkPackages project) projectPackages projectExes profiledProject assertedProject eventloggedProject pinned-workbench;
 
-          shell = import ./shell.nix { inherit pkgs customConfig; };
+          shell = import ./shell.nix { inherit pkgs customConfig cardano-mainnet-mirror; };
           devShells = {
-            inherit (shell) devops;
+            inherit (shell) devops workbench-shell;
             cluster = shell;
             profiled = project.profiled.shell;
           };
@@ -269,23 +269,20 @@
               "dockerImage/submit-api" = pkgs.submitApiDockerImage;
               ## TODO: drop external membench, once we bump 'node-snapshot'
               # snapshot = membench.outputs.packages.x86_64-linux.snapshot;
-              membenches = pkgs.membench-node-this-5.batch-report;
-              workbench-smoke-test =
-                (pkgs.supervisord-workbench-for-profile
-                  {
-                    inherit supervisord-workbench;
-                    profileName = "smoke-alzo";
-                  }
-                ).profile-run { trace = true; };
+              # membenches = pkgs.membench-node-this-5.batch-report;
+
+              ## This is a very light profile, no caching&pinning needed.
               workbench-ci-test =
                 (pkgs.supervisord-workbench-for-profile
                   {
-                    inherit supervisord-workbench;
-                    profileName = "k6-600slots-1000kU-1000kD-64kbs-10tps-fixed-loaded-alzo";
-                  }
-                ).profile-run { };
-              workbench-smoke-analysis = workbench-smoke-test.analysis;
-              workbench-ci-analysis = workbench-ci-test.analysis;
+                    # inherit supervisord-workbench; ## Not required, as long as it's fast.
+                    profileName = "ci-test-bage";
+                    cardano-node-rev =
+                      if __hasAttr "rev" self
+                      then self.rev
+                      else throw "Cannot get git revision of 'cardano-node', unclean checkout?";
+                  }).profile-run {};
+
               all-profiles-json = pkgs.all-profiles-json;
             }
             # Add checks to be able to build them individually
@@ -387,41 +384,46 @@
         }
       );
 
+      makeRequired = isPr: extra:
+      let
+        jobs = lib.foldl' lib.mergeAttrs { } (lib.attrValues flake.systemHydraJobs);
+        nonRequiredPaths = map lib.hasPrefix ([ "macos." ] ++ lib.optional isPr "linux.native.membenches");
+      in with self.legacyPackages.${defaultSystem};
+        releaseTools.aggregate {
+          name = "github-required";
+          meta.description = "All jobs required to pass CI";
+          constituents = lib.collect lib.isDerivation
+            (lib.mapAttrsRecursiveCond (v: !(lib.isDerivation v))
+              (path: value:
+                let stringPath = lib.concatStringsSep "." path; in if lib.isAttrs value && (lib.any (p: p stringPath) nonRequiredPaths) then { } else value)
+              jobs) ++ extra;
+        };
+
+
       hydraJobs =
         let
           jobs = lib.foldl' lib.mergeAttrs { } (lib.attrValues flake.systemHydraJobs);
-          nonRequiredPaths = map lib.hasPrefix [ "macos." ];
         in
         jobs // (with self.legacyPackages.${defaultSystem}; rec {
           cardano-deployment = cardanoLib.mkConfigHtml { inherit (cardanoLib.environments) mainnet testnet; };
           build-version = writeText "version.json" (builtins.toJSON {
             inherit (self) lastModified lastModifiedDate narHash outPath shortRev rev;
           });
-          required = releaseTools.aggregate {
-            name = "github-required";
-            meta.description = "All jobs required to pass CI";
-            constituents = lib.collect lib.isDerivation
-              (lib.mapAttrsRecursiveCond (v: !(lib.isDerivation v))
-                (path: value:
-                  let stringPath = lib.concatStringsSep "." path; in if lib.isAttrs value && (lib.any (p: p stringPath) nonRequiredPaths) then { } else value)
-                jobs) ++ [
-              cardano-deployment
-              build-version
-            ];
-          };
+          required = makeRequired false [ cardano-deployment build-version ];
         });
 
       hydraJobsPr =
         let
           nonPrJobs = map lib.hasPrefix [
-            "linux.native.workbench-ci-analysis"
-            "linux.native.workbench-ci-test"
+            "linux.native.membenches"
           ];
         in
         (lib.mapAttrsRecursiveCond (v: !(lib.isDerivation v))
           (path: value:
             let stringPath = lib.concatStringsSep "." path; in if lib.isAttrs value && (lib.any (p: p stringPath) nonPrJobs) then { } else value)
-          hydraJobs);
+          hydraJobs) // {
+            required = makeRequired true [ hydraJobs.cardano-deployment hydraJobs.build-version ];
+          };
 
     in
     builtins.removeAttrs flake [ "systemHydraJobs" ] // {

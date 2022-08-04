@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -19,7 +20,7 @@ import           Cardano.Logging.Types
 import           Control.Monad.IO.Class (MonadIO, liftIO)
 import qualified Control.Tracer as T
 import           Data.IORef (modifyIORef, newIORef, readIORef)
-import           Data.List (intersperse, nub, sortBy)
+import           Data.List (groupBy, intersperse, nub, sortBy)
 import qualified Data.Map as Map
 import           Data.Text (Text, pack, toLower)
 import qualified Data.Text as T
@@ -28,7 +29,6 @@ import           Data.Text.Lazy (toStrict)
 import           Data.Text.Lazy.Builder (Builder, fromString, fromText, singleton)
 import           Data.Time (getZonedTime)
 import           Trace.Forward.Utils.DataPoint (DataPoint (..))
-
 
 data DocuResult =
   DocuTracer Builder
@@ -127,6 +127,17 @@ docIt :: MonadIO m
   => BackendConfig
   -> (LoggingContext, Either TraceControl a)
   -> m ()
+docIt EKGBackend (LoggingContext{},
+  Left (Document idx mdText mdMetrics (DocCollector docRef))) = do
+    liftIO $ modifyIORef docRef (\ docMap ->
+        Map.insert
+          idx
+          ((\e -> e { ldBackends  = EKGBackend : ldBackends e
+                    })
+            (case Map.lookup idx docMap of
+                          Just e  -> e
+                          Nothing -> seq mdText (seq mdMetrics (emptyLogDoc mdText mdMetrics))))
+          docMap)
 docIt backend (LoggingContext {..},
   Left (Document idx mdText mdMetrics (DocCollector docRef))) = do
     liftIO $ modifyIORef docRef (\ docMap ->
@@ -294,9 +305,9 @@ documentMarkdown (Documented documented) tracers = do
     let messageDocs = map (\(i, ld) -> case ldNamespace ld of
                                 []     -> (["No Namespace"], documentItem (i, ld))
                                 (hn:_) -> (hn, documentItem (i, ld))) sortedItems
-        metricsItems = filter (not . Map.null . ldMetricsDoc . snd) sortedItems
-        metricsDocs = map documentMetrics metricsItems
-    pure $ messageDocs ++ concat metricsDocs
+        metricsItems = map snd $ filter (not . Map.null . ldMetricsDoc . snd) sortedItems
+        metricsDocs = documentMetrics metricsItems
+    pure $ messageDocs ++ metricsDocs
   where
     documentItem :: (Int, LogDoc) -> DocuResult
     documentItem (_idx, ld@LogDoc {..}) =
@@ -304,25 +315,32 @@ documentMarkdown (Documented documented) tracers = do
         [DatapointBackend] -> DocuDatapoint $
                     mconcat $ intersperse (fromText "\n\n")
                       [ namespacesBuilder (nub ldNamespace)
-                      , betweenLines (fromText ldDoc)
+                      , accentuated ldDoc
                       ]
-        _                     -> DocuTracer $
+        _ -> DocuTracer $
                     mconcat $ intersperse (fromText "\n\n")
                       [ namespacesBuilder (nub ldNamespace)
-                      , betweenLines (fromText ldDoc)
-                      , propertiesBuilder ld
+                      , accentuated ldDoc
                       , configBuilder ld
                       ]
 
-    documentMetrics :: (Int, LogDoc) -> [([Text], DocuResult)]
-    documentMetrics (_idx, ld@LogDoc {..}) =
-      map (\(name, builder) -> ([name] , DocuMetric $
-          mconcat $ intersperse (fromText "\n\n")
-            [ builder
-            , namespacesMetricsBuilder (nub ldNamespace)
-            , configMetricsBuilder ld
-            ]))
-          $ metricsBuilder ldMetricsDoc
+    documentMetrics :: [LogDoc] -> [([Text], DocuResult)]
+    documentMetrics logDocs =
+      let nameCommentNamespaceList = 
+            concatMap (\ld -> zip (Map.toList (ldMetricsDoc ld)) (repeat (ldNamespace ld))) logDocs
+          sortedNameCommentNamespaceList =
+            sortBy (\a b -> compare ((fst . fst) a) ((fst . fst) b)) nameCommentNamespaceList
+          groupedNameCommentNamespaceList =
+            groupBy (\a b -> (fst . fst) a == (fst . fst) b) sortedNameCommentNamespaceList
+      in map documentMetrics' groupedNameCommentNamespaceList
+
+    documentMetrics' :: [((Text, Text), [Namespace])] -> ([Text], DocuResult)
+    documentMetrics' ncns@(((name, comment), _) : _tail) =
+      ([name], DocuMetric 
+              $ mconcat $ intersperse(fromText "\n\n")
+                    [ metricToBuilder (name,comment)
+                    , namespacesMetricsBuilder (nub (concatMap snd ncns))
+                    ])
 
     namespacesBuilder :: [Namespace] -> Builder
     namespacesBuilder [ns] = namespaceBuilder ns
@@ -343,21 +361,6 @@ documentMarkdown (Documented documented) tracers = do
     namespaceMetricsBuilder :: Namespace -> Builder
     namespaceMetricsBuilder ns = mconcat (intersperse (singleton '.') (map fromText ns))
 
-    propertiesBuilder :: LogDoc -> Builder
-    propertiesBuilder LogDoc {..} =
-        case nub ldSeverity of
-          []  -> fromText "> Severity:   " <> asCode (fromString (show Info))
-          [s] -> fromText "> Severity:   " <> asCode (fromString (show s))
-          l   -> fromText "> Severities: "
-                  <> mconcat (intersperse (singleton ',')
-                        (map (asCode . fromString . show) l))
-      <>
-        case nub ldPrivacy of
-          []  -> fromText "\nPrivacy:   " <> asCode (fromString (show Public))
-          [p] -> fromText "\nPrivacy:   " <> asCode (fromString (show p))
-          l   -> fromText "\nPrivacies: "
-                  <> mconcat (intersperse (singleton ',')
-                        (map (asCode . fromString . show) l))
 
     configBuilder :: LogDoc -> Builder
     configBuilder LogDoc {..} =
@@ -374,12 +377,6 @@ documentMarkdown (Documented documented) tracers = do
       <> filteredBuilder (nub ldFiltered) (nub ldSeverity)
       <> limiterBuilder (nub ldLimiter)
 
-    configMetricsBuilder :: LogDoc -> Builder
-    configMetricsBuilder LogDoc {..} =
-      fromText "From current configuration:\n"
-      <> filteredBuilder (nub ldFiltered) (nub ldSeverity)
-      <> limiterBuilder (nub ldLimiter)
-
     backendsBuilder :: [BackendConfig] -> Builder
     backendsBuilder [] = fromText "No backends found"
     backendsBuilder l  = fromText "Backends:\n\t\t\t"
@@ -392,7 +389,7 @@ documentMarkdown (Documented documented) tracers = do
     filteredBuilder :: [SeverityF] -> [SeverityS] -> Builder
     filteredBuilder [] _ = mempty
     filteredBuilder l r =
-      fromText "Filtered: "
+      fromText "Filtered "
       <> case (l, r) of
             ([SeverityF (Just lh)], [rh]) ->
               if fromEnum rh >= fromEnum lh
@@ -400,7 +397,7 @@ documentMarkdown (Documented documented) tracers = do
                 else (asCode . fromString) "Invisible"
             ([SeverityF Nothing], [_rh]) -> "Invisible"
             _ -> mempty
-      <> fromText " because the filter level is "
+      <> fromText " by config value: "
       <> mconcat (intersperse (fromText ", ")
           (map (asCode . fromString . show) l))
 
@@ -417,20 +414,21 @@ documentMarkdown (Documented documented) tracers = do
                             <> (asCode . fromString. show) d)
                  l))
 
-    metricsBuilder :: Map.Map Text Text -> [(Text, Builder)]
-    metricsBuilder metricsDoc =
-      let metricsList = Map.toList metricsDoc
-      in map (\t@(name, _) -> (name, metricFormatToText t)) metricsList
+    -- metricsBuilder :: (Text, Text) -> [(Text, Builder)]
+    -- metricsBuilder (name, t) = (name, metricFormatToText t) 
 
-    metricFormatToText :: (Text, Text) -> Builder
-    metricFormatToText (name, text) =
-      fromText "### "
-        <> fromText name
-          <> fromText "\n"
-            <> betweenLines (fromText text)
+    metricToBuilder :: (Text, Text) -> Builder
+    metricToBuilder (name, text) =
+        fromText "### "
+          <> fromText name
+            <> fromText "\n"
+              <> accentuated text
 
 asCode :: Builder -> Builder
 asCode b = singleton '`' <> b <> singleton '`'
 
-betweenLines :: Builder -> Builder
-betweenLines b = fromText "\n***\n" <> b <> fromText "\n***\n"
+accentuated :: Text -> Builder
+accentuated t = if t == ""
+                  then fromText "\n"
+                  else fromText "\n"
+                        <> fromText (T.unlines $ map ("> " <>) (T.lines t))

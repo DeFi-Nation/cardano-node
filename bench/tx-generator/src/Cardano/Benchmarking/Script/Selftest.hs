@@ -5,22 +5,23 @@ where
 import           Prelude
 
 import qualified Data.ByteString.Lazy.Char8 as BSL
-import           Data.Dependent.Sum ( (==>) )
+import           Data.Dependent.Sum ((==>))
 import           Data.String
 
 import           Control.Monad
+import           Control.Monad.IO.Class (liftIO)
 
 import           Cardano.Api
 import           Ouroboros.Network.NodeToClient (IOManager)
 
-import           Cardano.Benchmarking.Tracer (createDebugTracers)
-import           Cardano.Benchmarking.Types
-import           Cardano.Benchmarking.Script.Aeson (prettyPrint)
 import           Cardano.Benchmarking.Script.Action
+import           Cardano.Benchmarking.Script.Aeson (prettyPrint)
 import           Cardano.Benchmarking.Script.Env as Script
 import           Cardano.Benchmarking.Script.Setters
 import           Cardano.Benchmarking.Script.Store
 import           Cardano.Benchmarking.Script.Types
+import           Cardano.Benchmarking.Tracer (initDefaultTracers)
+import           Cardano.Benchmarking.Types
 
 import           Paths_tx_generator
 
@@ -30,8 +31,8 @@ runSelftest iom outFile = do
   let
     submitMode = maybe DiscardTX DumpToFile outFile
     fullScript = do
-        set BenchTracers createDebugTracers
-        forM_ (testScript protocolFile submitMode) action      
+        liftIO initDefaultTracers >>= set BenchTracers
+        forM_ (testScript protocolFile submitMode) action
   runActionM fullScript iom >>= \case
     (Right a  , _ ,  ()) -> return $ Right a
     (Left err , _  , ()) -> return $ Left err
@@ -42,11 +43,8 @@ printJSON = BSL.putStrLn $ prettyPrint $ testScript "/dev/zero" DiscardTX
 testScript :: FilePath -> SubmitMode -> [Action]
 testScript protocolFile submitMode =
   [ SetProtocolParameters (UseLocalProtocolFile protocolFile)
-  , Set (TNumberOfInputsPerTx ==>  2)
-  , Set (TNumberOfOutputsPerTx ==>  2)
   , Set (TTxAdditionalSize ==>  39)
   , Set (TFee ==>  Lovelace 212345)
-  , Set (TMinValuePerUTxO ==>  Lovelace 1000000)
   , Set (TTTL ==> SlotNo 1000000)
   , Set (TNetworkId ==> Testnet (NetworkMagic {unNetworkMagic = 42}))
   , InitWallet wallet
@@ -63,7 +61,7 @@ testScript protocolFile submitMode =
   , RunBenchmark era wallet
     submitMode
     SpendOutput
-    (ThreadName "walletBasedBenchmark") 4000 (TPSRate 10.0)
+    (ThreadName "walletBasedBenchmark") extraArgs (TPSRate 10.0)
   ]
   where
     era = AnyCardanoEra AllegraEra
@@ -72,3 +70,12 @@ testScript protocolFile submitMode =
     addr = PayToAddr key
     createChange val count
       = CreateChange era wallet wallet submitMode addr (Lovelace val) count
+    extraArgs = RunBenchmarkAux {
+        auxTxCount = 4000
+      , auxFee = 1000000
+      , auxOutputsPerTx = 2
+      , auxInputsPerTx = 2
+      , auxInputs = 8000
+      , auxOutputs = 8000
+      , auxMinValuePerUTxO = 10500000
+      }

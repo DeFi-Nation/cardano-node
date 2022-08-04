@@ -12,6 +12,7 @@ module Cardano.Api.Shelley
 
     -- * Cryptographic key interface
     -- $keys
+    Key(..),
     VerificationKey(..),
     SigningKey(..),
 
@@ -115,6 +116,8 @@ module Cardano.Api.Shelley
     toShelleyScriptHash,
     fromShelleyScriptHash,
     PlutusScript(..),
+    PlutusScriptOrReferenceInput(..),
+    SimpleScriptOrReferenceInput(..),
     toPlutusData,
     fromPlutusData,
     toAlonzoData,
@@ -201,16 +204,26 @@ module Cardano.Api.Shelley
     ProtocolState(..),
     decodeProtocolState,
     SerialisedDebugLedgerState(..),
+    CurrentEpochState(..),
     SerialisedCurrentEpochState(..),
     decodeCurrentEpochState,
+    PoolState(..),
+    SerialisedPoolState(..),
+    decodePoolState,
     UTxO(..),
+    AcquireFailure(..),
+    SystemStart(..),
+
 
     -- ** Various calculations
     LeadershipError(..),
     currentEpochEligibleLeadershipSlots,
     nextEpochEligibleLeadershipSlots,
+
     -- ** Conversions
     shelleyPayAddrToPlutusPubKHash,
+    toConsensusGenTx,
+    fromAlonzoCostModels,
     --TODO: arrange not to export these
     toShelleyNetwork,
     fromShelleyPParams,
@@ -223,6 +236,8 @@ import           Cardano.Api.Block
 import           Cardano.Api.Certificate
 import           Cardano.Api.Eras
 import           Cardano.Api.IPC
+import           Cardano.Api.InMode
+import           Cardano.Api.KeysByron
 import           Cardano.Api.KeysPraos
 import           Cardano.Api.KeysShelley
 import           Cardano.Api.LedgerState

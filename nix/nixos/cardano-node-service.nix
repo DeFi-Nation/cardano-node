@@ -9,27 +9,42 @@ let
   envConfig = cfg.environments.${cfg.environment};
   runtimeDir = if cfg.runtimeDir == null then cfg.stateDir else "/run/${cfg.runtimeDir}";
   mkScript = cfg:
-    let baseConfig = recursiveUpdate (cfg.nodeConfig
-      // (mapAttrs' (era: epoch:
-        nameValuePair "Test${era}HardForkAtEpoch" epoch
-      ) cfg.forceHardForks)
-      // (optionalAttrs cfg.useNewTopology {
-        EnableP2P = true;
-        TargetNumberOfRootPeers = cfg.targetNumberOfRootPeers;
-        TargetNumberOfKnownPeers = cfg.targetNumberOfKnownPeers;
-        TargetNumberOfEstablishedPeers = cfg.targetNumberOfEstablishedPeers;
-        TargetNumberOfActivePeers = cfg.targetNumberOfActivePeers;
-        TestEnableDevelopmentNetworkProtocols = true;
-        MaxConcurrencyBulkSync = 2;
-      })) cfg.extraNodeConfig;
+    let baseConfig =
+          recursiveUpdate
+            (cfg.nodeConfig
+             // (mapAttrs' (era: epoch:
+               nameValuePair "Test${era}HardForkAtEpoch" epoch
+             ) cfg.forceHardForks)
+            // (optionalAttrs cfg.useNewTopology {
+              EnableP2P = true;
+              TargetNumberOfRootPeers = cfg.targetNumberOfRootPeers;
+              TargetNumberOfKnownPeers = cfg.targetNumberOfKnownPeers;
+              TargetNumberOfEstablishedPeers = cfg.targetNumberOfEstablishedPeers;
+              TargetNumberOfActivePeers = cfg.targetNumberOfActivePeers;
+              TestEnableDevelopmentNetworkProtocols = true;
+              MaxConcurrencyBulkSync = 2;
+            })) cfg.extraNodeConfig;
+        baseInstanceConfig =
+          i:
+          if !cfg.useLegacyTracing
+          then baseConfig //
+               { ## XXX: remove once legacy tracing is dropped
+                 minSeverity = "Critical";
+                 setupScribes = [];
+                 setupBackends = [];
+                 defaultScribes = [];
+                 defaultBackends = [];
+                 options = {};
+               }
+          else baseConfig //
+               (optionalAttrs (baseConfig ? hasEKG) {
+                  hasEKG = baseConfig.hasEKG + i;
+               }) //
+               (optionalAttrs (baseConfig ? hasPrometheus) {
+                 hasPrometheus = map (n: if isInt n then n + i else n) baseConfig.hasPrometheus;
+               });
     in i: let
-    instanceConfig = recursiveUpdate (baseConfig
-      // (optionalAttrs (baseConfig ? hasEKG) {
-          hasEKG = baseConfig.hasEKG + i;
-      })
-      // (optionalAttrs (baseConfig ? hasPrometheus) {
-          hasPrometheus = map (n: if isInt n then n + i else n) baseConfig.hasPrometheus;
-      })) (cfg.extraNodeInstanceConfig i);
+    instanceConfig = recursiveUpdate (baseInstanceConfig i) (cfg.extraNodeInstanceConfig i);
     nodeConfigFile = if (cfg.nodeConfigFile != null) then cfg.nodeConfigFile
       else toFile "config-${toString cfg.nodeId}-${toString i}.json" (toJSON instanceConfig);
     newTopology = {
@@ -98,13 +113,17 @@ let
       "--config ${nodeConfigFile}"
       "--database-path ${instanceDbPath}"
       "--topology ${topology}"
-    ] ++ (lib.optionals (!cfg.systemdSocketActivation) ([
+    ] ++ lib.optionals (!cfg.systemdSocketActivation) [
       "--host-addr ${cfg.hostAddr}"
       "--port ${toString (cfg.port + i)}"
       "--socket-path ${cfg.socketPath}"
-    ] ++ lib.optional (cfg.ipv6HostAddr i != null)
-      "--host-ipv6-addr ${cfg.ipv6HostAddr i}"
-    )) ++ consensusParams.${cfg.nodeConfig.Protocol} ++ cfg.extraArgs ++ cfg.rtsArgs;
+    ] ++ lib.optionals (cfg.tracerSocketPathAccept != null) [
+        "--tracer-socket-path-accept ${cfg.tracerSocketPathAccept}"
+    ] ++ lib.optionals (cfg.tracerSocketPathConnect != null) [
+        "--tracer-socket-path-connect ${cfg.tracerSocketPathConnect}"
+    ] ++ lib.optionals (cfg.ipv6HostAddr i != null) [
+        "--host-ipv6-addr ${cfg.ipv6HostAddr i}"
+    ] ++ consensusParams.${cfg.nodeConfig.Protocol} ++ cfg.extraArgs ++ cfg.rtsArgs;
     in ''
         echo "Starting: ${concatStringsSep "\"\n   echo \"" cmd}"
         echo "..or, once again, in a single line:"
@@ -116,7 +135,7 @@ let
           ${pkgs.rsync}/bin/rsync --archive --ignore-errors --exclude 'clean' ${cfg.databasePath}/ ${instanceDbPath}/ || true
         fi
         ''}
-        exec ${toString cmd}'';
+        ${toString cmd}'';
 in {
   options = {
     services.cardano-node = {
@@ -184,7 +203,7 @@ in {
 
       executable = mkOption {
         type = types.str;
-        default = "${cfg.package}/bin/cardano-node";
+        default = "exec ${cfg.package}/bin/cardano-node";
         defaultText = "cardano-node";
         description = ''
           The cardano-node executable invocation to use
@@ -301,6 +320,18 @@ in {
         type = types.str;
         default = "${runtimeDir}/node.socket";
         description = ''Local communication socket path.'';
+      };
+
+      tracerSocketPathAccept = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''Listen for incoming cardano-tracer connection on a local socket.'';
+      };
+
+      tracerSocketPathConnect = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''Connect to cardano-tracer listening on a local socket.'';
       };
 
       systemdSocketActivation = mkOption {
@@ -422,6 +453,14 @@ in {
         default = cfg.nodeConfig.EnableP2P or false;
         description = ''
           Use new, p2p/ledger peers compatible topology.
+        '';
+      };
+
+      useLegacyTracing = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Use the legacy tracing, based on iohk-monitoring-framework.
         '';
       };
 
