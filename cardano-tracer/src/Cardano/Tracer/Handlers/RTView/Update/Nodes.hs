@@ -18,11 +18,11 @@ import           Control.Monad.Extra (whenJust)
 import           Data.List (find)
 import           Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
-import           Data.Maybe (catMaybes, fromMaybe)
+import           Data.Maybe (fromMaybe)
 import           Data.Set (Set, (\\))
 import qualified Data.Set as S
 import qualified Data.Text as T
-import           Data.Text.Read (double)
+import           Data.Text.Read (decimal, double)
 import           Data.Time.Calendar (diffDays)
 import           Data.Time.Clock (UTCTime, addUTCTime, diffUTCTime, utctDay)
 import           Data.Time.Clock.System (getSystemTime, systemToUTCTime)
@@ -30,6 +30,7 @@ import           Data.Time.Format (defaultTimeLocale, formatTime)
 import           Data.Word (Word64)
 import qualified Graphics.UI.Threepenny as UI
 import           Graphics.UI.Threepenny.Core
+import           Text.Printf (printf)
 import           Text.Read (readMaybe)
 
 import           Cardano.Tracer.Configuration
@@ -48,6 +49,7 @@ import           Cardano.Tracer.Handlers.RTView.Update.NodeInfo
 import           Cardano.Tracer.Handlers.RTView.Update.Utils
 import           Cardano.Tracer.Handlers.RTView.Utils
 import           Cardano.Tracer.Types
+import           Cardano.Tracer.Utils
 
 updateNodesUI
   :: TracerEnv
@@ -87,6 +89,7 @@ updateNodesUI tracerEnv@TracerEnv{teConnectedNodes, teAcceptedMetrics, teSavedTO
   setBlockReplayProgress connected teAcceptedMetrics
   setChunkValidationProgress connected teSavedTO
   setLedgerDBProgress connected teSavedTO
+  setProducerMode connected teAcceptedMetrics
   setLeadershipStats connected displayedElements teAcceptedMetrics
   setEraEpochInfo connected displayedElements teAcceptedMetrics nodesEraSettings
 
@@ -152,27 +155,32 @@ updateNodesUptime
 updateNodesUptime tracerEnv displayedElements = do
   now <- systemToUTCTime <$> liftIO getSystemTime
   displayed <- liftIO $ readTVarIO displayedElements
-  elsIdsWithUptimes <- forConnectedUI tracerEnv $ getUptimeForNode now displayed
-  setTextValues $ catMaybes elsIdsWithUptimes
+  forConnectedUI_ tracerEnv $ getUptimeForNode now displayed
  where
-   getUptimeForNode now displayed nodeId@(NodeId anId) = do
-    let nodeStartElId  = anId <> "__node-start-time"
-        nodeUptimeElId = anId <> "__node-uptime"
+  getUptimeForNode now displayed nodeId@(NodeId anId) = do
+    let nodeStartElId   = anId <> "__node-start-time"
+        nodeUptimeDElId = anId <> "__node-uptime-days"
+        nodeUptimeHElId = anId <> "__node-uptime-hours"
+        nodeUptimeMElId = anId <> "__node-uptime-mins"
+        nodeUptimeSElId = anId <> "__node-uptime-secs"
     case getDisplayedValuePure displayed nodeId nodeStartElId of
-       Nothing -> return Nothing
-       Just tsRaw ->
-         case readMaybe (T.unpack tsRaw) of
-           Nothing -> return Nothing
-           Just (startTime :: UTCTime) -> do
-             let uptimeDiff = now `diffUTCTime` startTime
-                 uptime = uptimeDiff `addUTCTime` nullTime
-                 uptimeFormatted = formatTime defaultTimeLocale "%X" uptime
-                 daysNum = utctDay uptime `diffDays` utctDay nullTime
-                 uptimeWithDays = if daysNum > 0
-                                    -- Show days only if 'uptime' > 23:59:59.
-                                    then show daysNum <> "d " <> uptimeFormatted
-                                    else uptimeFormatted
-             return $ Just (nodeUptimeElId, T.pack uptimeWithDays)
+      Nothing -> return ()
+      Just tsRaw ->
+        case readMaybe (T.unpack tsRaw) of
+          Nothing -> return ()
+          Just (startTime :: UTCTime) -> do
+            let uptimeDiff = now `diffUTCTime` startTime
+                uptime     = uptimeDiff `addUTCTime` nullTime
+                hoursNum   = formatTime defaultTimeLocale "%H" uptime
+                minsNum    = formatTime defaultTimeLocale "%M" uptime
+                secsNum    = formatTime defaultTimeLocale "%S" uptime
+                daysNum    = utctDay uptime `diffDays` utctDay nullTime
+            setTextValues
+              [ (nodeUptimeDElId, showT daysNum   <> "d")
+              , (nodeUptimeHElId, T.pack hoursNum <> "h")
+              , (nodeUptimeMElId, T.pack minsNum  <> "m")
+              , (nodeUptimeSElId, T.pack secsNum  <> "s")
+              ]
 
 setBlockReplayProgress
   :: Set NodeId
@@ -247,6 +255,26 @@ setLedgerDBProgress connected savedTO = do
               _ -> return ()
           _ -> return ()
 
+setProducerMode
+  :: Set NodeId
+  -> AcceptedMetrics
+  -> UI ()
+setProducerMode connected acceptedMetrics = do
+  allMetrics <- liftIO $ readTVarIO acceptedMetrics
+  forM_ connected $ \nodeId@(NodeId anId) ->
+    whenJust (M.lookup nodeId allMetrics) $ \(ekgStore, _) ->
+      forMM_ (liftIO $ getListOfMetrics ekgStore) $ \(mName, _) ->
+        case mName of
+          "Forge.NodeIsLeader"    -> showProducerMode anId
+          "Forge.NodeIsLeaderNum" -> showProducerMode anId
+          _ -> return ()
+ where
+  -- The presence of these metrics is a proof that this node is
+  -- configured as a producer, so display corresponding icon.
+  showProducerMode anId = do
+    window <- askWindow
+    findAndSet showInline window (anId <> "__node-producer-label")
+
 setLeadershipStats
   :: Set NodeId
   -> DisplayedElements
@@ -291,24 +319,31 @@ setEraEpochInfo connected displayed acceptedMetrics nodesEraSettings = do
     whenJust (M.lookup nodeId allSettings) $ \settings -> do
       setDisplayedValue nodeId displayed (anId <> "__node-era") $ esEra settings
       updateEpochInfo settings nodeId epochS
+      updateEpochSlotProgress settings nodeId allMetrics
  where
   updateEpochInfo settings (NodeId anId) epochS =
     unless (T.null epochS) $ do
       let epochNum = readInt epochS 0
-      case getEndOfCurrentEpoch settings epochNum of
-        Nothing -> return ()
-        Just (_start, end) -> do
-          setTextValue (anId <> "__node-epoch-end") $
-                       T.pack $ formatTime defaultTimeLocale "%D %T" end
-          {-
-          let elapsedSecondsFromEpochStart = nesSlotLengthInS settings * slotInEpoch
-              diffFromEndToStart = end `diffUTCTime` start
-              elapsed = secondsToNominalDiffTime (fromIntegral elapsedSecondsFromEpochStart)
-              diffFromNowToEnd = diffFromEndToStart - elapsed
-              timeLeft = diffFromNowToEnd `addUTCTime` nullTime
-              timeLeftF = T.pack $ formatTime defaultTimeLocale "%d:%H:%M:%S" timeLeft
-          setTextValue (anId <> "__node-epoch-end") timeLeftF
-          -}
+      whenJust (getEndOfCurrentEpoch settings epochNum) $ \(start, end) -> do
+        now <- systemToUTCTime <$> liftIO getSystemTime
+        if start < now && now < end
+          then do
+            -- We're synced and on the current epoch.
+            let diffFromNowToEnd = end `diffUTCTime` now
+                timeLeft  = diffFromNowToEnd `addUTCTime` nullTime
+                daysNum   = utctDay timeLeft `diffDays` utctDay nullTime
+                hoursNum   = formatTime defaultTimeLocale "%H" timeLeft
+                minsNum    = formatTime defaultTimeLocale "%M" timeLeft
+                secsNum    = formatTime defaultTimeLocale "%S" timeLeft
+                timeLeftF  =     showT daysNum  <> "d "
+                             <> T.pack hoursNum <> "h "
+                             <> T.pack minsNum  <> "m "
+                             <> T.pack secsNum  <> "s"
+            setTextValue (anId <> "__node-epoch-end") timeLeftF
+          else do
+            -- We're out of date (sync in progress), so just display the end date.
+            let endDateF = T.pack $ formatTime defaultTimeLocale "%D %T" end
+            setTextValue (anId <> "__node-epoch-end") endDateF
 
   getEndOfCurrentEpoch EraSettings{esEra, esSlotLengthInS, esEpochLength} currentEpoch =
     case lookup esEra epochsInfo of
@@ -327,6 +362,20 @@ setEraEpochInfo connected displayed acceptedMetrics nodesEraSettings = do
           !dateOfEpochStart = startDate + fromIntegral secondsFromEpochStartToEpoch
           !dateOfEpochEnd = dateOfEpochStart + fromIntegral epochLengthInS
       in Just (s2utc dateOfEpochStart, s2utc dateOfEpochEnd)
+
+  updateEpochSlotProgress EraSettings{esEpochLength} nodeId@(NodeId anId) allMetrics =
+    whenJust (M.lookup nodeId allMetrics) $ \(ekgStore, _) -> do
+      metrics <- liftIO $ getListOfMetrics ekgStore
+      whenJust (lookup "ChainDB.SlotInEpoch" metrics) $ \slotInEpochS ->
+        case decimal slotInEpochS of
+          Left _ -> return ()
+          Right (slotInEpoch :: Int, _) -> do
+            let slotsPct :: Double
+                slotsPct = fromIntegral slotInEpoch / fromIntegral (esEpochLength `div` 100)
+                slotsPctF = printf "%.1f" slotsPct <> "%"
+            setTextValue (anId <> "__node-epoch-progress-label") (T.pack slotsPctF)
+            window <- askWindow
+            findAndSet (set style [("width", slotsPctF)]) window (anId <> "__node-epoch-progress")
 
 type EraName         = T.Text
 type FirstEpochInEra = Int

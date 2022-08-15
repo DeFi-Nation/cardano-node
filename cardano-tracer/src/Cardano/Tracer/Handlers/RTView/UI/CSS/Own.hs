@@ -177,7 +177,7 @@ span[data-tooltip] {
 }
 
 .rt-view-logs-input {
-  max-width: 150px;
+  max-width: 200px;
 }
 
 .rt-view-error-msg-input {
@@ -214,6 +214,38 @@ span[data-tooltip] {
   padding-bottom: 11px;
   float: right;
   clear: right;
+}
+
+.rt-view-progress-container {
+  width: 110px;
+  background-color: #f5f5f5;
+  height: 32px;
+  position: relative;
+  border-radius: 4px;
+}
+
+.rt-view-progress-container-text {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 100%;
+  border-radius: 4px;
+}
+
+.rt-view-progress-container-text-label {
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  align-items: center;
+  border-radius: 4px;
+  color: #444;
+}
+
+.rt-view-loading-bar {
+  width: 0%;
+  height: 100%;
+  background-color: #f14668;
+  border-radius: 4px;
 }
 
 /* Dark Theme */
@@ -315,6 +347,30 @@ span[data-tooltip] {
   width: 20px;
   color: whitesmoke;
   margin-top: 5px;
+}
+
+.dark .rt-view-info-icon-on-button svg {
+  width: 20px;
+  color: whitesmoke;
+  margin-top: 6px;
+}
+
+.dark .rt-view-leader-icon-on-button svg {
+  width: 20px;
+  color: whitesmoke;
+  margin-top: 7px;
+}
+
+.dark .rt-view-leader-icon-2-on-button svg {
+  width: 14px;
+  color: whitesmoke;
+  margin-top: 7px;
+}
+
+.dark .rt-view-leader-icon-3-on-button svg {
+  width: 11px;
+  color: whitesmoke;
+  margin-top: 7px;
 }
 
 .dark .rt-view-show-hide-pass-icon svg {
@@ -641,6 +697,12 @@ span[data-tooltip] {
   color: #f7967f;
 }
 
+.dark .rt-view-node-producer-label svg {
+  width: 22px;
+  margin-left: 10px;
+  color: lightgreen;
+}
+
 /********************* Light Theme *********************/
 
 .light {
@@ -720,6 +782,30 @@ span[data-tooltip] {
   width: 20px;
   color: whitesmoke;
   margin-top: 5px;
+}
+
+.light .rt-view-info-icon-on-button svg {
+  width: 20px;
+  color: whitesmoke;
+  margin-top: 6px;
+}
+
+.light .rt-view-leader-icon-on-button svg {
+  width: 20px;
+  color: whitesmoke;
+  margin-top: 7px;
+}
+
+.light .rt-view-leader-icon-2-on-button svg {
+  width: 14px;
+  color: whitesmoke;
+  margin-top: 7px;
+}
+
+.light .rt-view-leader-icon-3-on-button svg {
+  width: 11px;
+  color: whitesmoke;
+  margin-top: 7px;
 }
 
 .light .rt-view-show-hide-pass-icon svg {
@@ -1044,6 +1130,12 @@ span[data-tooltip] {
 
 .light .rt-view-test-status-message-fail {
   color: #e6380d;
+}
+
+.light .rt-view-node-producer-label svg {
+  width: 22px;
+  margin-left: 10px;
+  color: green;
 }
 |]
 
